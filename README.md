@@ -6,6 +6,14 @@ Tester hardware. It supports the TI-99/4, TI-99/4A, TI-99/4QI V2.2, and a
 TI-99/4A with missing or damaged GROMs. The LOAD switch can start the diagnostic
 without relying on the console's title screen or keyboard service.
 
+> **IMPORTANT: THE FULL DIAGNOSTIC REQUIRES A HARDWARE MODIFICATION.** Geoff
+> Trott's original Console Tester is wired for a single 8 KiB EPROM at `>E000`.
+> It must be modified to accept the additional 8 KiB diagnostic window at
+> `>6000` before you install and use `HEXDIAG07.BIN`. Do not place the full
+> 16 KiB diagnostic image into an unmodified board. Follow the illustrated
+> [16 KiB hardware modification guide](docs/HARDWARE-MODIFICATION-GUIDE.md)
+> before programming or installing the replacement device.
+
 The fixed 8 KiB core performs automatic CPU, tester SRAM, scratchpad, VRAM,
 console ROM/GROM read-path, diagnostic ROM, and LED checks. The optional second
 8 KiB window adds readable results and interactive keyboard, joystick, video,
