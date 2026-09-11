@@ -1,0 +1,1764 @@
+* SPDX-License-Identifier: Apache-2.0
+* Copyright 2026 Jon Guidry (hexbus)
+* Project: https://github.com/hexbus/ti99-console-tester
+* TI-99/4 and TI-99/4A sidecar Console Tester - Beta 0.7 fixed core.
+*
+* PURPOSE
+*   Bring up a console from the side port without depending on a working
+*   console ROM, GROM, 32 KiB expansion, or console-resident keyboard routine.
+*   This bank owns automatic power-on tests, the common text renderer, direct
+*   TMS9901 keyboard services, the LOAD vector, and the extension ABI.
+*
+* PHYSICAL MEMORY CONTRACT
+*   >C000->DFFF  U7 tester SRAM; workspace, state, and relocated demo code
+*   >E000->FFFF  fixed 8 KiB diagnostic bank (this file)
+*   >6000->7FFF  optional second 8 KiB bank, validated before execution
+*   >E002 writes  six-bit LED latch; reads still fetch fixed-bank ROM
+*   >FFFC        BLWP vector used by both LOAD and the cartridge menu entry
+*
+* DESIGN RULES
+*   - The fixed core must continue to fit the original 27C64 window.
+*   - No stock ROM/GROM subroutine is called. ROM and GROM are test subjects.
+*   - Interrupts remain masked. VDP timing code polls the TMS9901/VDP directly.
+*   - Byte values are carried in the high byte of a TMS9900 register.
+*   - BL places the return address in R11. Routines that make nested BL calls
+*     save that link in an explicitly documented register or SRAM cell.
+*   - The public extension interface is SVCENT at >FE00, ABI version 1.1.
+*
+* Memory-mapped console devices.
+VDPRD   equ  >8800
+VDPST   equ  >8802
+VDPWD   equ  >8c00
+VDPWA   equ  >8c02
+GROMRD  equ  >9800
+GROMWA  equ  >9c02
+SNDOUT  equ  >8400
+LEDOUT  equ  >e002
+
+* Shared tester SRAM. >C000 is also the fixed LOAD workspace.
+WRKSP   equ  >c000
+FLAGS   equ  >c020
+ROMSUM  equ  >c022
+DIAGSUM equ  >c024
+GRSUM0  equ  >c026
+GRSUM1  equ  >c028
+GRSUM2  equ  >c02a
+FAILAD  equ  >c02c
+FAILXP  equ  >c02e
+FAILAC  equ  >c030
+LEDSTA  equ  >c032
+SYSID   equ  >c034
+EXTSTA  equ  >c036
+FAILMS  equ  >c038             * expected XOR actual, TI bit order in high byte
+VDP1SH  equ  >c03a             * VDP R1 shadow, also copied to console SAVVDP
+VDPTMP  equ  >c03c             * scratch word used while updating VDP1SH
+KRAW    equ  >c048             * column-zero input mask shared with extension
+KBUF    equ  >c080             * extension keyboard display buffer
+KMSAVE  equ  >c0f8             * direct-matrix service return link
+KMFIRST equ  >c0fa             * first decoded matrix token
+KMCOUNT equ  >c0fc             * number of active matrix positions
+KMTOK   equ  >c0fe             * current decoded matrix token
+
+* Firmware-set classifications. These describe observed ROM/GROM checksums;
+* an unknown set is reported but is not itself a hardware failure.
+IDUNKN  equ  >0000
+ID4AST  equ  >0001
+ID4AV2  equ  >0002             * TI-99/4QI, GROM 0 V2.2
+ID994   equ  >0003
+
+* Automatic-test failure bits in FLAGS.
+FCPU    equ  >0001
+FTRAM   equ  >0002
+FSCRAM  equ  >0004
+FVRAM   equ  >0008
+FROM    equ  >0010
+FGROM   equ  >0020
+FSELF   equ  >0040
+
+* Geoff Trott's original Version 2.0 firmware proves all six masks.  The
+* latch uses bits 0-2 for red and bits 4-6 for green; bit 3 (>0800) is unused.
+LRAMBAD equ  >0100
+LVDPBAD equ  >0200
+LROMBAD equ  >0400
+LROMOK  equ  >4000
+LRAMOK  equ  >1000
+LVDPOK  equ  >2000
+
+* ---------------------------------------------------------------------------
+* Fixed-bank header, startup, and automatic test sequencer
+* ---------------------------------------------------------------------------
+
+       aorg >e000
+       byte >aa,>01
+       data >0000,>0000,PROGLS,>0000,>0000,>0000,>0000
+
+PROGLS data >0000,ENTRY
+       byte 17
+       text 'TI-99/4 & 4A DIAG'
+       even
+
+* Selecting the title-screen entry uses the same LOAD vector as the board's
+* physical LOAD button.  Both paths therefore exercise one startup contract.
+ENTRY  blwp @>fffc
+       rt
+
+* MAIN is a cold or warm diagnostic start. It deliberately reinitializes every
+* result cell before testing CPU operations, both SRAM regions, all 16 KiB of
+* VRAM, console ROM/GROM read stability, this bank's checksum, and extension
+* integrity. On completion it displays results, sets the final LEDs, and enters
+* the extension only after the operator acknowledges the page.
+MAIN   limi 0
+       lwpi WRKSP
+       bl   @MUTE
+       bl   @BOOTBP
+       bl   @LEDWLK
+
+       clr  @FLAGS
+       clr  @ROMSUM
+       clr  @DIAGSUM
+       clr  @GRSUM0
+       clr  @GRSUM1
+       clr  @GRSUM2
+       clr  @FAILAD
+       clr  @FAILXP
+       clr  @FAILAC
+       clr  @SYSID
+       clr  @EXTSTA
+       clr  @FAILMS
+       li   r15,>0700            * all three red groups while tests run
+       mov  r15,@LEDSTA
+       movb r15,@LEDOUT
+
+* CPU core and tester SRAM.  The active 32-byte workspace is excluded.
+       bl   @CPUTST
+       mov  r0,r0
+       jeq  CPUOK
+       ori  r0,FCPU
+       soc  r0,@FLAGS
+CPUOK  li   r1,>c100
+       li   r2,>0f80             * >C100->DFFF, 3968 words
+       bl   @RAMRNG
+       mov  r0,r0
+       jeq  TRAMOK
+       li   r1,FTRAM
+       soc  r1,@FLAGS
+       mov  r0,@FAILAD
+TRAMOK
+
+* Preserve and test the common >8300->83FF scratchpad subset. The legacy
+* >8000->83FF range is valid for the /4 but reaches reserved/MMIO on a 4A.
+       li   r1,>8300
+       li   r2,>c100
+       li   r3,>0080
+       bl   @COPYW
+       li   r1,>8300
+       li   r2,>0080
+       bl   @RAMRNG
+       mov  r0,r9
+       li   r1,>c100
+       li   r2,>8300
+       li   r3,>0080
+       bl   @COPYW
+       mov  r9,r9
+       jeq  SCRTOK
+       li   r1,FSCRAM
+       soc  r1,@FLAGS
+       mov  r9,@FAILAD
+SCRTOK mov  @FLAGS,r0
+       andi r0,FCPU+FTRAM+FSCRAM
+       jne  RAMLED
+       andi r15,>feff
+       ori  r15,LRAMOK
+RAMLED mov  r15,@LEDSTA
+       movb r15,@LEDOUT
+
+* The VRAM test is deliberately destructive; this ROM owns the display.
+       bl   @VDPINI
+       bl   @VDPTST
+       mov  r0,r0
+       jeq  VDPOK
+       li   r1,FVRAM
+       soc  r1,@FLAGS
+       jmp  VDPLED
+VDPOK  andi r15,>fdff
+       ori  r15,LVDPOK
+VDPLED mov  r15,@LEDSTA
+       movb r15,@LEDOUT
+
+* Stable repeated reads are a useful first-line bus/ROM diagnostic without
+* pretending that one checksum identifies every legitimate console revision.
+       bl   @CONTST
+       bl   @GROMTS
+       bl   @IDENT
+       bl   @EXTST
+       bl   @SELFTS
+       mov  @FLAGS,r0
+       andi r0,FROM+FGROM+FSELF
+       jne  ROMLED
+       andi r15,>fbff
+       ori  r15,LROMOK
+ROMLED mov  r15,@LEDSTA
+       movb r15,@LEDOUT
+
+       bl   @SCREEN
+       mov  @FLAGS,r0
+       jne  BOOTFL
+       bl   @PASSBP
+       jmp  BOOTDN
+BOOTFL bl   @FAILBP
+BOOTDN
+       mov  @EXTSTA,r0
+       ci   r0,>0001
+       jne  HALT
+EXEGO
+       mov  @>602e,r0           * validated extension entry vector
+       ci   r0,>6032
+       jl   EXEERR
+       ci   r0,>7ffe
+       jhe  EXEERR
+       b    *r0
+EXEERR li   r0,FSELF
+       soc  r0,@FLAGS
+HALT   jmp  HALT
+
+* ---------------------------------------------------------------------------
+* CPU and RAM
+* ---------------------------------------------------------------------------
+
+* CPUTST - exercise a compact set of ALU and shift operations.
+* Out: R0=0 on pass, FCPU on failure. Clobbers R0-R1.
+CPUTST li   r0,>1234
+       ai   r0,>1111
+       ci   r0,>2345
+       jne  CPUBAD
+       mov  r0,r1
+       xor  @CPUXOR,r1
+       ci   r1,>d3ba
+       jne  CPUBAD
+       sla  r0,1
+       ci   r0,>468a
+       jne  CPUBAD
+       inv  r0
+       ci   r0,>b975
+       jne  CPUBAD
+       clr  r0
+       rt
+CPUBAD li   r0,FCPU
+       rt
+CPUXOR data >f0ff
+
+* RAMRNG - address/XOR pattern followed by four solid/checkerboard patterns.
+* In:  R1=start address, R2=word count.
+* Out: R0=0 on pass, or the first failing CPU address.
+* Clobbers R1-R8 and R10; R10 preserves the caller's R11.
+RAMRNG mov  r11,r10
+       mov  r1,r4
+       mov  r2,r5
+       li   r6,>a55a
+RAMADW mov  r1,r7
+       xor  r6,r7
+       mov  r7,*r1+
+       dec  r2
+       jne  RAMADW
+       mov  r4,r1
+       mov  r5,r2
+RAMADR mov  r1,r7
+       xor  r6,r7
+       c    *r1,r7
+       jne  RAMBAD
+       inct r1
+       dec  r2
+       jne  RAMADR
+       clr  r8
+RAMPAT mov  r4,r1
+       mov  r5,r2
+       mov  @RPATS(r8),r6
+RAMPW  mov  r6,*r1+
+       dec  r2
+       jne  RAMPW
+       mov  r4,r1
+       mov  r5,r2
+RAMPR  c    *r1,r6
+       jne  RAMBAD
+       inct r1
+       dec  r2
+       jne  RAMPR
+       inct r8
+       ci   r8,8
+       jne  RAMPAT
+       clr  r0
+       b    *r10
+RAMBAD mov  r1,r0
+       b    *r10
+RPATS data >0000,>ffff,>aaaa,>5555
+
+* COPYW - overlap-unsafe forward word copy.
+* In: R1=source, R2=destination, R3=word count. Clobbers R1-R3, R10.
+COPYW  mov  r11,r10
+COPYLP mov  *r1+,*r2+
+       dec  r3
+       jne  COPYLP
+       b    *r10
+
+* ---------------------------------------------------------------------------
+* VDP and VRAM
+* ---------------------------------------------------------------------------
+
+* VDPINI - place a TMS9918-family VDP in a known display-off Graphics-I state.
+* Reading status first acknowledges any stale interrupt before register writes.
+VDPINI movb @VDPST,r0
+       li   r1,VDPOFF
+       li   r2,16
+VDPILP movb *r1+,@VDPWA
+       nop
+       dec  r2
+       jne  VDPILP
+       li   r0,>8000           * VDPOFF programmed VDP register 1 to >80
+       movb r0,@VDP1SH
+       rt
+VDPOFF byte >00,>80,>80,>81,>00,>82,>0e,>83
+       byte >01,>84,>06,>85,>03,>86,>f4,>87
+
+* VDPTST - destructive four-pattern verification of all 16 KiB VRAM.
+* Out: R0=0 pass, R0=1 fail. FAILAD/FAILXP/FAILAC/FAILMS retain first failure.
+VDPTST mov  r11,r13
+       li   r4,VRPATS
+       li   r5,4
+VDPPLP clr  r1
+       movb *r4+,r1
+       bl   @VRFILL
+       bl   @VRVER
+       mov  r6,r6
+       jne  VDPBAD
+       dec  r5
+       jne  VDPPLP
+       clr  r0
+       b    *r13
+VDPBAD mov  r0,@FAILAD
+       mov  r1,@FAILXP
+       mov  r2,@FAILAC
+       mov  r1,r3
+       xor  r2,r3
+       mov  r3,@FAILMS
+       li   r0,1
+       b    *r13
+VRPATS byte >00,>ff,>aa,>55
+       even
+
+* VRFILL - fill all 16 KiB VRAM with the byte in R1's high byte.
+VRFILL mov  r11,r10
+       clr  r0
+       bl   @SETAW
+       li   r2,>4000
+VRFW   movb r1,@VDPWD
+       nop
+       dec  r2
+       jne  VRFW
+       b    *r10
+
+* VRVER - verify all 16 KiB VRAM against R1's high byte.
+* Out: R6=0 pass/1 fail; R0=failing VRAM address; R2=actual byte.
+VRVER  mov  r11,r10
+       clr  r0
+       bl   @SETAR
+       li   r3,>4000
+       clr  r0
+       clr  r6
+VRVRD  clr  r2
+       movb @VDPRD,r2
+       nop
+       cb   r1,r2
+       jne  VRVBD
+       inc  r0
+       dec  r3
+       jne  VRVRD
+       b    *r10
+VRVBD  li   r6,1
+       b    *r10
+
+* SETAW / SETAR - program the VDP write/read address from R0.
+* The two control-port bytes are separated by NOPs for real TMS9918 timing.
+SETAW  mov  r0,r3
+       swpb r3
+       movb r3,@VDPWA
+       nop
+       mov  r0,r3
+       andi r3,>3f00
+       ori  r3,>4000
+       movb r3,@VDPWA
+       nop
+       rt
+SETAR  mov  r0,r3
+       swpb r3
+       movb r3,@VDPWA
+       nop
+       mov  r0,r3
+       andi r3,>3f00
+       movb r3,@VDPWA
+       nop
+       rt
+
+* ---------------------------------------------------------------------------
+* Console ROM, diagnostic ROM, and system GROM stability checks
+* ---------------------------------------------------------------------------
+
+* CONTST - read the 8 KiB console CPU ROM in both directions. Matching sums
+* prove a stable read path; they do not claim that an unknown image is bad.
+CONTST mov  r11,r14
+       clr  r0
+       li   r1,>0000
+       li   r2,>1000
+CRFWD  a    *r1+,r0
+       dec  r2
+       jne  CRFWD
+       mov  r0,@ROMSUM
+       clr  r3
+       li   r1,>1ffe
+       li   r2,>1000
+CRREV  a    *r1,r3
+       dect r1
+       dec  r2
+       jne  CRREV
+       c    r0,r3
+       jeq  CRTOK
+       li   r1,FROM
+       soc  r1,@FLAGS
+CRTOK  b    *r14
+
+* SELFTS - verify this fixed bank's build-time zero 16-bit word sum.
+SELFTS mov  r11,r14
+       clr  r0
+       li   r1,>e000
+       li   r2,>1000
+SLFLP  a    *r1+,r0
+       dec  r2
+       jne  SLFLP
+       mov  r0,@DIAGSUM
+       mov  r0,r0
+       jeq  SLTOK
+       li   r1,FSELF
+       soc  r1,@FLAGS
+SLTOK  b    *r14
+
+* GROMTS - read each 6 KiB system GROM twice and compare its two sums. This
+* tests bus stability without requiring any particular firmware revision.
+GROMTS mov  r11,r14
+       clr  r8
+       clr  r3
+       bl   @GSCHK
+       mov  r9,@GRSUM0
+       li   r3,>2000
+       bl   @GSCHK
+       mov  r9,@GRSUM1
+       li   r3,>4000
+       bl   @GSCHK
+       mov  r9,@GRSUM2
+       mov  r8,r8
+       jeq  GRTOK
+       li   r1,FGROM
+       soc  r1,@FLAGS
+GRTOK  b    *r14
+
+* Check one 6 KiB GROM twice.  R3=start, R9=sum, R8 accumulates mismatch.
+GSCHK  mov  r11,r12
+       mov  r3,r7
+       bl   @GSUM
+       mov  r9,r6
+       mov  r7,r3
+       bl   @GSUM
+       c    r6,r9
+       jeq  GSOK
+       inc  r8
+GSOK   b    *r12
+
+* GSUM - sum one 6 KiB GROM starting at R3. Out: R9=sum.
+GSUM   mov  r11,r10
+       movb r3,@GROMWA
+       swpb r3
+       movb r3,@GROMWA
+       li   r5,>1800
+       clr  r9
+GSLP   clr  r4
+       movb @GROMRD,r4
+       srl  r4,8                 * MOVB leaves the byte in the MSB
+       a    r4,r9
+       dec  r5
+       jne  GSLP
+       b    *r10
+
+* Classify only known, stable console firmware.  An unknown checksum is
+* informational and must never set FROM/FGROM or light a red failure LED.
+IDENT  mov  r11,r14
+       clr  @SYSID
+       mov  @FLAGS,r0
+       andi r0,FROM+FGROM
+       jne  IDDONE
+       mov  @ROMSUM,r1
+       ci   r1,>f1bb             * stock 1979 TI-99/4 CPU ROM
+       jne  ID4ACK
+       mov  @GRSUM0,r1
+       ci   r1,>b16c
+       jne  IDDONE
+       mov  @GRSUM1,r1
+       ci   r1,>1b7b
+       jne  IDDONE
+       mov  @GRSUM2,r1
+       ci   r1,>9ec3
+       jne  IDDONE
+       li   r0,ID994
+       mov  r0,@SYSID
+       jmp  IDDONE
+ID4ACK mov  @ROMSUM,r1
+       ci   r1,>7d8c             * stock 4A and V2.2 use the same CPU ROM
+       jeq  ID4ARM
+       jmp  IDDONE
+ID4ARM
+       mov  @GRSUM1,r1
+       ci   r1,>1b99             * stock TI BASIC GROM 1
+       jne  IDDONE
+       mov  @GRSUM2,r1
+       ci   r1,>9adc             * stock TI BASIC GROM 2
+       jne  IDDONE
+       mov  @GRSUM0,r1
+       ci   r1,>5574
+       jne  IDV2CK
+       li   r0,ID4AST
+       mov  r0,@SYSID
+       jmp  IDDONE
+IDV2CK ci   r1,>31d7             * verified TI-99/4QI V2.2 GROM 0 sum
+       jne  IDDONE
+       li   r0,ID4AV2
+       mov  r0,@SYSID
+IDDONE b    *r14
+
+* Optional 16K extension.  No cartridge header means valid 8K compatibility
+* mode.  The private marker follows the one-entry HEXBUS DIAG 1.0 menu record.
+* A recognized signature with a bad checksum is a genuine diagnostic-ROM
+* failure and joins the existing FSELF/ROM LED group.
+* EXTST - validate marker, extension version, entry range, required ABI, and
+* zero word sum before any instruction is fetched from >6000.
+* Out: EXTSTA=0 absent, 1 valid, or 2 corrupt/incompatible.
+EXTST  mov  r11,r14
+       clr  @EXTSTA
+       mov  @>6000,r0
+       ci   r0,>aa01
+       jne  EXTDON
+       mov  @>602a,r0
+       ci   r0,>d1a6
+       jne  EXTBAD
+       mov  @>602c,r0
+       ci   r0,>1606
+       jne  EXTBAD
+       mov  @>6030,r0           * extension requires fixed-core ABI 1.1
+       ci   r0,>0101
+       jne  EXTBAD
+       clr  r0
+       li   r1,>6000
+       li   r2,>1000
+EXTSUM a    *r1+,r0
+       dec  r2
+       jne  EXTSUM
+       mov  r0,r0
+       jne  EXTBAD
+       li   r0,>0001
+       mov  r0,@EXTSTA
+       jmp  EXTDON
+EXTBAD li   r0,>0002
+       mov  r0,@EXTSTA
+       li   r1,FSELF
+       soc  r1,@FLAGS
+EXTDON b    *r14
+
+* ---------------------------------------------------------------------------
+* Screen and compact text helpers
+* ---------------------------------------------------------------------------
+
+* SCREEN - draw the automatic-results page entirely from local ROM data.
+* This page is itself the visible video-path test and remains usable when the
+* console firmware is missing or corrupt.
+SCREEN mov  r11,r13
+       bl   @TXTINI
+
+       li   r0,>0005
+       li   r1,TITLE
+       bl   @PUTSTR
+       li   r0,>0022             * row 1, centered; never wraps into row 2
+       li   r1,SUBTTL
+       bl   @PUTSTR
+
+       li   r0,>0062
+       li   r1,CPUTXT
+       bl   @PUTSTR
+       li   r0,>0078
+       li   r2,FCPU
+       bl   @PUTRES
+       li   r0,>0082
+       li   r1,TRAMTX
+       bl   @PUTSTR
+       li   r0,>0098
+       li   r2,FTRAM
+       bl   @PUTRES
+       li   r0,>00a2
+       li   r1,SCRTXT
+       bl   @PUTSTR
+       li   r0,>00b8
+       li   r2,FSCRAM
+       bl   @PUTRES
+
+       li   r0,>00e2
+       li   r1,VDPTXT
+       bl   @PUTSTR
+       li   r0,>00f8
+       li   r2,FVRAM
+       bl   @PUTRES
+       li   r0,>0102
+       li   r1,VIDTXT
+       bl   @PUTSTR
+       li   r0,>0114             * right-align THIS SCREEN at content column 30
+       li   r1,SCRENTX
+       bl   @PUTSTR
+
+       li   r0,>0122
+       li   r1,EXTTXT
+       bl   @PUTSTR
+       li   r0,>0135
+       bl   @PUTEXT
+
+       li   r0,>0142
+       li   r1,ROMTXT
+       bl   @PUTSTR
+       li   r0,>0158
+       li   r2,FROM
+       bl   @PUTRES
+       li   r0,>0162
+       li   r1,GROMTX
+       bl   @PUTSTR
+       li   r0,>0176             * eight-character status ends before frame
+       bl   @PUTGRS
+       li   r0,>0182
+       li   r1,DIAGTX
+       bl   @PUTSTR
+       li   r0,>0198
+       li   r2,FSELF
+       bl   @PUTRES
+
+       li   r0,>01c2
+       li   r1,PROFTX
+       bl   @PUTSTR
+       li   r0,>01e2
+       bl   @PUTPRO
+
+       li   r0,>0224             * right-align marker legend with ROM checksum
+       li   r1,>0100             * green check
+       bl   @VRW1
+       li   r0,>0226
+       li   r1,KNOWNTX
+       bl   @PUTSTR
+       li   r0,>0230             * right-align marker legend with G0 checksum
+       li   r1,>0900             * bold red X
+       bl   @VRW1
+       li   r0,>0232
+       li   r1,OTHERTX
+       bl   @PUTSTR
+       li   r0,>0242
+       mov  @ROMSUM,r1
+       li   r2,ROMEXP
+       bl   @PUTIDM
+       li   r0,>0244
+       li   r1,ROMIDT
+       bl   @PUTSTR
+       li   r0,>0248
+       mov  @ROMSUM,r1
+       bl   @PUTHEX
+       li   r0,>024f
+       mov  @GRSUM0,r1
+       li   r2,G0EXP
+       bl   @PUTIDM
+       li   r0,>0251
+       li   r1,G0IDTX
+       bl   @PUTSTR
+       li   r0,>0254
+       mov  @GRSUM0,r1
+       bl   @PUTHEX
+       li   r0,>0262
+       mov  @GRSUM1,r1
+       li   r2,G1EXP
+       bl   @PUTIDM
+       li   r0,>0264
+       li   r1,G1IDTX
+       bl   @PUTSTR
+       li   r0,>0267
+       mov  @GRSUM1,r1
+       bl   @PUTHEX
+       li   r0,>026f
+       mov  @GRSUM2,r1
+       li   r2,G2EXP
+       bl   @PUTIDM
+       li   r0,>0271
+       li   r1,G2IDTX
+       bl   @PUTSTR
+       li   r0,>0274
+       mov  @GRSUM2,r1
+       bl   @PUTHEX
+
+       li   r0,>0281
+       li   r1,NOTFAIL
+       bl   @PUTSTR
+       li   r0,>02a2
+       li   r1,LEDTXT
+       bl   @PUTSTR
+       li   r0,>02c2
+       li   r1,ENDTXT
+       mov  @EXTSTA,r2
+       ci   r2,>0001
+       jne  SCEND
+       mov  @FLAGS,r2
+       andi r2,FROM
+       jne  SCNOKE
+       mov  @ROMSUM,r2
+       ci   r2,>f1bb
+       jeq  SCMENU
+       ci   r2,>7d8c
+       jeq  SCMENU
+SCNOKE li   r1,NOKEYTX
+       jmp  SCEND
+SCMENU
+       li   r1,MENUTX
+SCEND  bl   @PUTSTR
+
+       mov  @FLAGS,r0
+       jeq  SCGREEN
+       li   r0,>4687             * dark red border
+       jmp  SCBORD
+SCGREEN
+       li   r0,>4287             * dark green border
+SCBORD bl   @VDPREG
+       b    *r13
+
+* Initialize the shared 32-column text display without drawing a page.
+* Exported to the >6000 extension through service 0 at >FE00.
+*
+* VDP demonstrations deliberately move every table and leave the control port
+* in timing-sensitive raster states.  Program the complete Graphics-I register
+* set before rebuilding VRAM, draw the fixed frame while the display is still
+* blanked, then program the complete set once more before enabling display.
+* The final pass is the hard ownership boundary between a VDP exercise and the
+* diagnostic UI; no following page may inherit a demo table or sprite list.
+* TXTINI - initialize Graphics-I text presentation, upload the private font and
+* frame glyphs, clear VRAM, draw the frame, then enable the display.
+TXTINI mov  r11,r12
+       bl   @VDPINI
+       clr  r0
+       bl   @SETAW
+       li   r1,>2000
+       li   r2,>0300
+SCCLR  movb r1,@VDPWD
+       nop
+       dec  r2
+       jne  SCCLR
+       li   r0,>0900             * ASCII 32 starts at pattern slot 32
+       bl   @SETAW
+       li   r1,FONT
+       li   r2,>0300             * ASCII 32..127, including true lowercase
+SCFNT  movb *r1+,@VDPWD
+       nop
+       dec  r2
+       jne  SCFNT
+       li   r0,>0880             * private frame characters >10..>15
+       bl   @SETAW
+       li   r1,FRAMEG
+       li   r2,48
+SCFRG  movb *r1+,@VDPWD
+       nop
+       dec  r2
+       jne  SCFRG
+       li   r0,>08b0             * private bold menu numerals >16..>1D
+       bl   @SETAW
+       li   r1,ACKGLY
+       li   r2,64
+SCACK  movb *r1+,@VDPWD
+       nop
+       dec  r2
+       jne  SCACK
+       li   r0,>0808             * private green check at character >01
+       bl   @SETAW
+       li   r1,MARKGL
+       li   r2,8
+SCMCK  movb *r1+,@VDPWD
+       nop
+       dec  r2
+       jne  SCMCK
+       li   r0,>0848             * private bold red X at character >09
+       bl   @SETAW
+       li   r2,8
+SCMRX  movb *r1+,@VDPWD
+       nop
+       dec  r2
+       jne  SCMRX
+       li   r0,>0380
+       bl   @SETAW
+       li   r1,>4f00             * dark blue on white, Tutor v1.0 palette
+       li   r2,32
+SCCOL  movb r1,@VDPWD
+       nop
+       dec  r2
+       jne  SCCOL
+       li   r0,>0380             * marker groups: green/white, red/white
+       bl   @SETAW
+       li   r1,>2f00
+       movb r1,@VDPWD
+       li   r1,>6f00
+       movb r1,@VDPWD
+       li   r0,>0300
+       li   r1,>d000
+       bl   @VRW1
+       bl   @SCRFRM
+       bl   @VDPINI              * reassert every table register after rebuild
+       li   r0,>e081             * 16 KiB VRAM, display and VBlank IRQ enabled
+       bl   @VDPREG
+       b    *r12
+
+* Fixed 32x24 frame shared by all automatic and interactive pages.
+SCRFRM mov  r11,r10
+       clr  r0
+       bl   @SETAW
+       li   r1,>1000
+       movb r1,@VDPWD
+       li   r1,>1400
+       li   r2,30
+SCFTOP movb r1,@VDPWD
+       dec  r2
+       jne  SCFTOP
+       li   r1,>1100
+       movb r1,@VDPWD
+       li   r0,>02e0
+       bl   @SETAW
+       li   r1,>1200
+       movb r1,@VDPWD
+       li   r1,>1400
+       li   r2,30
+SCFBOT movb r1,@VDPWD
+       dec  r2
+       jne  SCFBOT
+       li   r1,>1300
+       movb r1,@VDPWD
+       li   r6,>0020
+       li   r8,22
+SCFSID mov  r6,r0
+       li   r1,>1500
+       bl   @VRW1
+       ai   r0,31
+       bl   @VRW1
+       ai   r6,32
+       dec  r8
+       jne  SCFSID
+       b    *r10
+
+* R0=VRAM address, R1=zero-terminated ASCII.  The TI-99/4 firmware/keyboard
+* convention is upper-case only, so convert display strings at the final
+* output layer when the verified 1979 ROM/GROM set selected ID994.  /4A and
+* QI machines retain the Tutor-style Initial Caps strings stored in ROM.
+* PUTSTR - write a zero-terminated ROM string to VRAM.
+* In: R0=VRAM name-table address, R1=string. Newlines/wrapping are not implied.
+PUTSTR mov  r11,r14
+       bl   @SETAW
+PUTSLP movb *r1+,r2
+       jeq  PUTSRT
+       mov  @SYSID,r3
+       ci   r3,ID994
+       jne  PUTSWR
+       ci   r2,>6100
+       jlt  PUTSWR
+       ci   r2,>7b00
+       jhe  PUTSWR
+       ai   r2,>e000             * ASCII a-z -> A-Z in the high byte
+PUTSWR
+       movb r2,@VDPWD
+       nop
+       jmp  PUTSLP
+PUTSRT b    *r14
+
+* R0=VRAM address, R2=failure mask.
+PUTRES mov  r11,r12
+       mov  @FLAGS,r1
+       coc  r2,r1
+       jeq  PUTRFL
+       li   r1,PASSTX
+       jmp  PUTRGO
+PUTRFL li   r1,FAILTX
+PUTRGO bl   @PUTSTR
+       b    *r12
+
+* R0=VRAM address, R1=observed checksum, R2=zero-terminated table of known
+* values for this individual device.  A green check means a known stock
+* component; a bold red X means unknown identity, not a read-path failure.
+PUTIDM mov  r11,r12
+PIDMLP mov  *r2+,r3
+       jeq  PIDMNO
+       c    r1,r3
+       jne  PIDMLP
+       li   r1,>0100             * private green check glyph
+       jmp  PIDMGO
+PIDMNO li   r1,>0900             * private bold red X glyph
+PIDMGO bl   @VRW1
+       b    *r12
+
+* R0=VRAM address.  Firmware identity is descriptive, never a failure.
+PUTPRO mov  r11,r12
+       mov  @FLAGS,r1
+       andi r1,FROM+FGROM
+       jne  PPROER
+       mov  @SYSID,r1
+       ci   r1,ID994
+       jeq  PPRO4
+       ci   r1,ID4AST
+       jeq  PPRO4A
+       ci   r1,ID4AV2
+       jeq  PPROV2
+       li   r1,PCUSTX
+       jmp  PPROGO
+PPRO4  li   r1,P994TX
+       jmp  PPROGO
+PPRO4A li   r1,P4ATX
+       jmp  PPROGO
+PPROV2 li   r1,PV22TX
+       jmp  PPROGO
+PPROER li   r1,PERRTX
+PPROGO bl   @PUTSTR
+       b    *r12
+
+* R0=VRAM address.  Missing extension is valid 8K compatibility mode.
+PUTEXT mov  r11,r12
+       mov  @EXTSTA,r1
+       ci   r1,>0001
+       jeq  PEXTPR
+       ci   r1,>0002
+       jeq  PEXTBD
+       li   r1,EXT8TX
+       jmp  PEXTGO
+PEXTPR li   r1,EXTPRT
+       jmp  PEXTGO
+PEXTBD li   r1,EXTBDT
+PEXTGO bl   @PUTSTR
+       b    *r12
+
+* R0=VRAM address, R1=word.
+* PUTHEX - render the four hexadecimal digits of R1 at VRAM address R0.
+PUTHEX mov  r11,r14
+       mov  r1,r10
+       bl   @SETAW
+       li   r2,4
+HEXLP  mov  r10,r3
+       andi r3,>f000
+       srl  r3,12
+       movb @HEXDIG(r3),@VDPWD
+       nop
+       sla  r10,4
+       dec  r2
+       jne  HEXLP
+       b    *r14
+
+* R0 contains value/command bytes, for example >C081.  Keep a software shadow
+* of register 1 for display-mode transitions and deterministic diagnostics.
+VDPREG mov  r0,@VDPTMP
+       andi r0,>00ff
+       ci   r0,>0081
+       jne  VDPRNS
+       movb @VDPTMP,@VDP1SH
+VDPRNS mov  @VDPTMP,r0
+       movb r0,@VDPWA
+       nop
+       swpb r0
+       movb r0,@VDPWA
+       nop
+       rt
+
+* R0=VRAM address, R1 high byte=data.
+VRW1   mov  r11,r9
+       bl   @SETAW
+       movb r1,@VDPWD
+       nop
+       b    *r9
+
+* ---------------------------------------------------------------------------
+* LEDs and sound
+* ---------------------------------------------------------------------------
+
+* LEDWLK - one front-to-rear lamp walk used during cold/warm startup.
+LEDWLK mov  r11,r14
+       li   r1,LEDTAB
+       li   r2,6
+LEDWLP mov  *r1+,r15
+       movb r15,@LEDOUT
+       bl   @DELAY
+       dec  r2
+       jne  LEDWLP
+       clr  r15
+       movb r15,@LEDOUT
+       b    *r14
+* Physical front-to-rear order. The original Version 2.0 disassembly confirms
+* the previously unknown third-green mask is >4000; >0800 is unused.
+LEDTAB data >1000,>2000,>4000,>0100,>0200,>0400
+
+* Menu-only automatic LED show: individual walk, Larson scan, cumulative
+* fill/drain, then alternating green/red groups.  A table and one player keep
+* this inexpensive while making physical order mistakes immediately obvious.
+LEDPAT mov  r11,r10
+       li   r1,LPATTB
+       li   r2,34
+LEDPAL mov  *r1+,r15
+       movb r15,@LEDOUT
+       bl   @DELAY
+       dec  r2
+       jne  LEDPAL
+       clr  r15
+       movb r15,@LEDOUT
+       b    *r10
+LPATTB data >1000,>2000,>4000,>0100,>0200,>0400
+       data >1000,>2000,>4000,>0100,>0200,>0400
+       data >0200,>0100,>4000,>2000
+       data >1000,>3000,>7000,>7100,>7300,>7700
+       data >7300,>7100,>7000,>3000,>1000,>0000
+       data >7000,>0700,>7000,>0700,>7700,>0000
+
+* Short human-visible delay used only for LED and audible status cues. It is
+* intentionally not used for VDP animation timing.
+DELAY  li   r0,>5000
+DELAYL dec  r0
+       jne  DELAYL
+       rt
+
+MUTE   li   r1,>9f00
+       movb r1,@SNDOUT
+       li   r1,>bf00
+       movb r1,@SNDOUT
+       li   r1,>df00
+       movb r1,@SNDOUT
+       li   r1,>ff00
+       movb r1,@SNDOUT
+       rt
+
+* Same startup/result cues as Tutor diagnostic v1.0. These routines preserve
+* the caller's R11 in R10 because DELAY and MUTE are nested BL calls.
+BOOTBP mov  r11,r10
+       li   r0,>8600
+       movb r0,@SNDOUT
+       li   r0,>1200
+       movb r0,@SNDOUT
+       li   r0,>9000
+       movb r0,@SNDOUT
+       bl   @DELAY
+       bl   @MUTE
+       b    *r10
+PASSBP mov  r11,r10
+       li   r0,>8800
+       movb r0,@SNDOUT
+       li   r0,>0800
+       movb r0,@SNDOUT
+       li   r0,>9100
+       movb r0,@SNDOUT
+       bl   @DELAY
+       li   r0,>8400
+       movb r0,@SNDOUT
+       bl   @DELAY
+       bl   @MUTE
+       b    *r10
+FAILBP mov  r11,r10
+       li   r0,>e700
+       movb r0,@SNDOUT
+       li   r0,>f200
+       movb r0,@SNDOUT
+       bl   @DELAY
+       bl   @MUTE
+       b    *r10
+
+* ---------------------------------------------------------------------------
+* Strings and ASCII 32..127 font (shared design language with the Tutor ROM)
+* ---------------------------------------------------------------------------
+
+TITLE  text 'TI-99/4 and 4A Tester'
+       byte 0
+SUBTTL text 'Automatic Results - Beta 0.7'
+       byte 0
+CPUTXT text 'CPU CORE'
+       byte 0
+TRAMTX text 'TESTER SRAM'
+       byte 0
+SCRTXT text 'SCRATCHPAD (COMMON)'
+       byte 0
+VDPTXT text 'VDP VRAM'
+       byte 0
+VIDTXT text 'VIDEO PATH:'
+       byte 0
+SCRENTX text 'THIS SCREEN'
+       byte 0
+EXTTXT text '16K EXTENSION'
+       byte 0
+EXT8TX text '8K MODE'
+       byte 0
+EXTPRT text 'PRESENT'
+       byte 0
+EXTBDT text 'CORRUPT'
+       byte 0
+ROMTXT text 'CPU ROM READ'
+       byte 0
+DIAGTX text 'DIAG ROM SELF TEST'
+       byte 0
+GROMTX text 'GROM READ PATH  '
+       byte 0
+PROFTX text 'FIRMWARE SET:'
+       byte 0
+P994TX text 'STOCK TI-99/4 (1979)'
+       byte 0
+P4ATX  text 'STOCK TI-99/4A (1981)'
+       byte 0
+PV22TX text 'TI-99/4QI V2.2 (1983)'
+       byte 0
+PCUSTX text 'UNKNOWN/HOMEBREW - CALL ME!'
+       byte 0
+PERRTX text 'UNAVAILABLE - READ FAILURE'
+       byte 0
+KNOWNTX text '=KNOWN'
+       byte 0
+OTHERTX text '=OTHER'
+       byte 0
+ROMIDT text 'ROM'
+       byte 0
+G0IDTX text 'G0'
+       byte 0
+G1IDTX text 'G1'
+       byte 0
+G2IDTX text 'G2'
+       byte 0
+NOTFAIL text 'CUSTOM/MIXED IS NOT A FAILURE'
+       byte 0
+LEDTXT text 'GREEN=PASS  RED=FAIL'
+       byte 0
+ENDTXT text 'POWER CYCLE TO RUN AGAIN'
+       byte 0
+MENUTX text 'PRESS 0 FOR MAIN MENU'
+       byte 0
+NOKEYTX text 'MENU NEEDS STOCK CPU ROM'
+       byte 0
+PASSTX text 'PASS'
+       byte 0
+FAILTX text 'FAIL'
+       byte 0
+HEXDIG text '0123456789ABCDEF'
+       even
+
+FRAMEG
+       byte >00,>00,>00,>1f,>1f,>18,>18,>18
+       byte >00,>00,>00,>f8,>f8,>18,>18,>18
+       byte >18,>18,>18,>1f,>1f,>00,>00,>00
+       byte >18,>18,>18,>f8,>f8,>00,>00,>00
+       byte >00,>00,>00,>ff,>ff,>00,>00,>00
+       byte >18,>18,>18,>18,>18,>18,>18,>18
+
+ACKGLY
+       byte >30,>70,>30,>30,>30,>30,>78,>00
+       byte >78,>cc,>0c,>18,>30,>60,>fc,>00
+       byte >f8,>0c,>0c,>78,>0c,>0c,>f8,>00
+       byte >18,>38,>78,>d8,>fc,>18,>18,>00
+       byte >fc,>c0,>c0,>f8,>0c,>0c,>f8,>00
+       byte >78,>c0,>c0,>f8,>cc,>cc,>78,>00
+       byte >fc,>0c,>18,>30,>60,>60,>60,>00
+       byte >78,>cc,>cc,>78,>cc,>cc,>78,>00
+
+MARKGL
+       byte >00,>00,>06,>0c,>98,>f0,>60,>00  * check
+       byte >00,>c6,>6c,>38,>38,>6c,>c6,>00  * bold X
+
+ROMEXP data >f1bb,>7d8c,>0000
+G0EXP  data >b16c,>5574,>31d7,>0000
+G1EXP  data >1b7b,>1b99,>0000
+G2EXP  data >9ec3,>9adc,>0000
+
+FONT
+* 32-47: space through slash
+       byte >00,>00,>00,>00,>00,>00,>00,>00
+       byte >20,>20,>20,>20,>20,>00,>20,>00
+       byte >50,>50,>50,>00,>00,>00,>00,>00
+       byte >50,>f8,>50,>50,>f8,>50,>00,>00
+       byte >20,>78,>a0,>70,>28,>f0,>20,>00
+       byte >c8,>d0,>20,>40,>98,>18,>00,>00
+       byte >60,>90,>a0,>40,>a8,>90,>68,>00
+       byte >20,>20,>40,>00,>00,>00,>00,>00
+       byte >10,>20,>40,>40,>40,>20,>10,>00
+       byte >40,>20,>10,>10,>10,>20,>40,>00
+       byte >00,>a8,>70,>f8,>70,>a8,>00,>00
+       byte >00,>20,>20,>f8,>20,>20,>00,>00
+       byte >00,>00,>00,>00,>00,>20,>20,>40
+       byte >00,>00,>00,>f8,>00,>00,>00,>00
+       byte >00,>00,>00,>00,>00,>00,>20,>00
+       byte >08,>10,>20,>40,>80,>00,>00,>00
+* 48-63: zero through question mark
+       byte >70,>88,>98,>a8,>c8,>88,>70,>00
+       byte >20,>60,>20,>20,>20,>20,>70,>00
+       byte >70,>88,>08,>10,>20,>40,>f8,>00
+       byte >f0,>08,>08,>70,>08,>08,>f0,>00
+       byte >10,>30,>50,>90,>f8,>10,>10,>00
+       byte >f8,>80,>80,>f0,>08,>08,>f0,>00
+       byte >70,>80,>80,>f0,>88,>88,>70,>00
+       byte >f8,>08,>10,>20,>40,>40,>40,>00
+       byte >70,>88,>88,>70,>88,>88,>70,>00
+       byte >70,>88,>88,>78,>08,>08,>70,>00
+       byte >00,>20,>00,>00,>20,>00,>00,>00
+       byte >00,>20,>00,>00,>20,>20,>40,>00
+       byte >10,>20,>40,>80,>40,>20,>10,>00
+       byte >00,>00,>f8,>00,>f8,>00,>00,>00
+       byte >40,>20,>10,>08,>10,>20,>40,>00
+       byte >70,>88,>08,>10,>20,>00,>20,>00
+* 64-79: at through O
+       byte >70,>88,>b8,>a8,>b8,>80,>70,>00
+       byte >70,>88,>88,>f8,>88,>88,>88,>00
+       byte >f0,>88,>88,>f0,>88,>88,>f0,>00
+       byte >70,>88,>80,>80,>80,>88,>70,>00
+       byte >f0,>88,>88,>88,>88,>88,>f0,>00
+       byte >f8,>80,>80,>f0,>80,>80,>f8,>00
+       byte >f8,>80,>80,>f0,>80,>80,>80,>00
+       byte >70,>88,>80,>b8,>88,>88,>70,>00
+       byte >88,>88,>88,>f8,>88,>88,>88,>00
+       byte >70,>20,>20,>20,>20,>20,>70,>00
+       byte >38,>10,>10,>10,>90,>90,>60,>00
+       byte >88,>90,>a0,>c0,>a0,>90,>88,>00
+       byte >80,>80,>80,>80,>80,>80,>f8,>00
+       byte >88,>d8,>a8,>a8,>88,>88,>88,>00
+       byte >88,>c8,>a8,>98,>88,>88,>88,>00
+       byte >70,>88,>88,>88,>88,>88,>70,>00
+* 80-95: P through underscore
+       byte >f0,>88,>88,>f0,>80,>80,>80,>00
+       byte >70,>88,>88,>88,>a8,>90,>68,>00
+       byte >f0,>88,>88,>f0,>a0,>90,>88,>00
+       byte >78,>80,>80,>70,>08,>08,>f0,>00
+       byte >f8,>20,>20,>20,>20,>20,>20,>00
+       byte >88,>88,>88,>88,>88,>88,>70,>00
+       byte >88,>88,>88,>88,>88,>50,>20,>00
+       byte >88,>88,>88,>a8,>a8,>d8,>88,>00
+       byte >88,>88,>50,>20,>50,>88,>88,>00
+       byte >88,>88,>50,>20,>20,>20,>20,>00
+       byte >f8,>08,>10,>20,>40,>80,>f8,>00
+       byte >70,>40,>40,>40,>40,>40,>70,>00
+       byte >80,>40,>20,>10,>08,>00,>00,>00
+       byte >70,>10,>10,>10,>10,>10,>70,>00
+       byte >20,>50,>88,>00,>00,>00,>00,>00
+       byte >00,>00,>00,>00,>00,>00,>f8,>00
+* 96-127: backtick, true lowercase a-z, braces, bar, tilde, block.
+       byte >20,>10,>00,>00,>00,>00,>00,>00
+       byte >00,>00,>70,>08,>78,>88,>78,>00
+       byte >80,>80,>b0,>c8,>88,>88,>f0,>00
+       byte >00,>00,>70,>88,>80,>88,>70,>00
+       byte >08,>08,>68,>98,>88,>88,>78,>00
+       byte >00,>00,>70,>88,>f8,>80,>70,>00
+       byte >30,>48,>40,>e0,>40,>40,>40,>00
+       byte >00,>00,>78,>88,>78,>08,>70,>00
+       byte >80,>80,>b0,>c8,>88,>88,>88,>00
+       byte >20,>00,>60,>20,>20,>20,>70,>00
+       byte >10,>00,>30,>10,>10,>90,>60,>00
+       byte >80,>80,>90,>a0,>c0,>a0,>90,>00
+       byte >60,>20,>20,>20,>20,>20,>70,>00
+       byte >00,>00,>d0,>a8,>a8,>a8,>a8,>00
+       byte >00,>00,>b0,>c8,>88,>88,>88,>00
+       byte >00,>00,>70,>88,>88,>88,>70,>00
+       byte >00,>00,>f0,>88,>f0,>80,>80,>00
+       byte >00,>00,>78,>88,>88,>78,>08,>08
+       byte >00,>00,>b0,>c8,>80,>80,>80,>00
+       byte >00,>00,>78,>80,>70,>08,>f0,>00
+       byte >40,>40,>e0,>40,>40,>48,>30,>00
+       byte >00,>00,>88,>88,>88,>98,>68,>00
+       byte >00,>00,>88,>88,>88,>50,>20,>00
+       byte >00,>00,>88,>a8,>a8,>a8,>50,>00
+       byte >00,>00,>88,>50,>20,>50,>88,>00
+       byte >00,>00,>88,>88,>78,>08,>70,>00
+       byte >00,>00,>f8,>10,>20,>40,>f8,>00
+       byte >18,>20,>20,>40,>20,>20,>18,>00
+       byte >20,>20,>20,>20,>20,>20,>20,>00
+       byte >c0,>20,>20,>10,>20,>20,>c0,>00
+       byte >00,>68,>90,>00,>00,>00,>00,>00
+       byte >aa,>55,>aa,>55,>aa,>55,>aa,>55
+
+* Short shared VDP strings occupy the otherwise-unused gap below the asset
+* block, reclaiming direct-mapped extension bytes for the moving showcase.
+       aorg >f070
+VSTART text 'ANY KEY STARTS; 0 MAIN MENU'
+       byte 0
+VDPAUTO text 'AUTO-ADVANCE: TWO SEC EACH'
+       byte 0
+VDPNEXT text 'TEXT, MULTI, BITMAP, SPRITES'
+       byte 0
+VDPN4  text 'TEXT, MULTI, SPRITES'
+       byte 0
+
+* ---------------------------------------------------------------------------
+* Fixed-core read-only asset ABI for the >6000 extension.
+*
+* The extension references these tables by fixed address.  Keep this block at
+* >F100 and update its matching EQU values if any table changes size.
+* ---------------------------------------------------------------------------
+
+       aorg >f100
+* Exact 298-byte MegaDemo PSG phrase used by the released Pyuuta/Tutor v1.0
+* diagnostic.  Do not regenerate or retune it: the phrase begins and ends at
+* the same PSG state and is repeated eight times by the extension.  Format is
+* frame delay, raw-byte count, raw SN76489 bytes; zero terminates the phrase.
+MDPSG
+       byte >02,>0c,>80,>0f,>90,>a0,>0f,>b7,>c9,>09,>df,>e3,>f4,>92
+       byte >02,>01,>93
+       byte >0a,>03,>8d,>11,>90
+       byte >02,>01,>92
+       byte >02,>01,>93
+       byte >10,>01,>94
+       byte >02,>01,>95
+       byte >02,>01,>97
+       byte >02,>01,>9f
+       byte >02,>01,>90
+       byte >02,>01,>92
+       byte >02,>01,>93
+       byte >0a,>0a,>e3,>f6,>c0,>0c,>ad,>11,>b9,>8e,>0b,>90
+       byte >02,>03,>f4,>b7,>92
+       byte >02,>03,>f3,>b6,>93
+       byte >02,>02,>f2,>b5
+       byte >02,>02,>f3,>b6
+       byte >02,>02,>f4,>b7
+       byte >02,>02,>f3,>b6
+       byte >02,>03,>8d,>11,>90
+       byte >02,>01,>92
+       byte >02,>01,>93
+       byte >02,>02,>f4,>b7
+       byte >0e,>01,>94
+       byte >02,>01,>95
+       byte >02,>01,>97
+       byte >02,>01,>9f
+       byte >02,>03,>8e,>0b,>90
+       byte >02,>01,>92
+       byte >02,>01,>93
+       byte >0a,>0a,>e3,>f6,>cb,>0a,>ae,>0f,>b9,>86,>0d,>90
+       byte >02,>03,>f4,>b7,>92
+       byte >02,>03,>f3,>b6,>93
+       byte >02,>02,>f2,>b5
+       byte >02,>02,>f3,>b6
+       byte >02,>02,>f4,>b7
+       byte >02,>02,>f3,>b6
+       byte >08,>05,>f4,>b7,>8e,>0f,>94
+       byte >02,>01,>91
+       byte >02,>01,>92
+       byte >02,>01,>93
+       byte >08,>03,>80,>14,>90
+       byte >02,>01,>91
+       byte >02,>01,>92
+       byte >02,>01,>93
+       byte >02,>03,>8d,>17,>90
+       byte >02,>01,>92
+       byte >02,>01,>93
+       byte >0a,>0a,>e3,>f6,>c9,>09,>a0,>0f,>b9,>8d,>11,>90
+       byte >02,>03,>f4,>b7,>92
+       byte >02,>03,>f3,>b6,>93
+       byte >02,>02,>f2,>b5
+       byte >02,>02,>f3,>b6
+       byte >02,>02,>f4,>b7
+       byte >02,>02,>f3,>b6
+       byte >02,>03,>8d,>17,>90
+       byte >02,>01,>92
+       byte >02,>01,>93
+       byte >02,>05,>f4,>b7,>8d,>11,>90
+       byte >02,>01,>91
+       byte >02,>01,>92
+       byte >02,>01,>93
+       byte >08,>01,>90
+       byte >02,>01,>91
+       byte >02,>01,>92
+       byte >02,>01,>93
+       byte >02,>03,>8e,>0f,>90
+       byte >02,>01,>92
+       byte >02,>01,>93
+       byte >0a,>03,>80,>0f,>90
+       byte 0
+MDPSGE equ  $
+       even
+
+* Preserve the fixed addresses of the VDP and bank-18 assets below.  The gap
+* is deliberate headroom left by replacing the temporary packed-song build.
+       aorg >f546
+
+* Graphics-II register transaction. R1 deliberately remains display-off here;
+* the extension writes >E081 only after its name, pattern, color, and relocated
+* sprite-terminator tables are complete.
+VDBREG data >0280,>8081,>0e82,>ff83
+       data >0384,>7685,>0386,>f487
+VDBPDT byte >81,>42,>24,>18,>18,>24,>42,>81
+       byte >18,>24,>42,>81,>81,>42,>24,>18
+       byte >66,>66,>66,>66,>66,>66,>66,>66
+       byte >aa,>55,>aa,>55,>aa,>55,>aa,>55
+* Sprite test assets exported to HEXEXT.A99 at fixed ABI addresses. Four
+* consecutive 8x8 patterns are copied to VRAM >1800. DEMOAT is the five-entry
+* SAT described at VDSPRT: all Y=79, entries 0/1 overlap, and >D0 terminates.
+SPRITE byte >18,>3c,>7e,>ff,>ff,>7e,>3c,>18
+       byte >81,>42,>24,>18,>18,>24,>42,>81
+       byte >ff,>81,>bd,>a5,>a5,>bd,>81,>ff
+       byte >00,>66,>ff,>ff,>7e,>3c,>18,>00
+DEMOAT byte 79,40,0,15,79,40,0,8
+       byte 79,160,0,5,79,200,0,7
+       byte 79,240,0,10
+       byte >d0
+* Tutor-style animated character field used by the TI sprite showcase.
+DEMOPAT
+       byte >18,>3c,>7e,>db,>ff,>7e,>24,>18
+       byte >81,>42,>24,>18,>18,>24,>42,>81
+       byte >aa,>55,>aa,>55,>aa,>55,>aa,>55
+       byte >00,>18,>3c,>7e,>3c,>18,>00,>00
+       byte >88,>44,>22,>11,>22,>44,>88,>00
+       byte >10,>38,>7c,>fe,>7c,>38,>10,>00
+       byte >c3,>66,>3c,>18,>3c,>66,>c3,>00
+       byte >00,>24,>5a,>a5,>a5,>5a,>24,>00
+DEMOFR
+       byte >18,>3c,>7e,>db,>ff,>7e,>24,>18
+       byte >0c,>1e,>3f,>6d,>ff,>3f,>12,>0c
+       byte >06,>0f,>9f,>b6,>ff,>9f,>09,>06
+       byte >03,>87,>cf,>db,>ff,>cf,>84,>03
+       byte >81,>c3,>e7,>db,>ff,>e7,>42,>81
+       byte >c0,>e1,>f3,>db,>ff,>f3,>21,>c0
+       byte >60,>f0,>f9,>6d,>ff,>f9,>90,>60
+       byte >30,>78,>fc,>b6,>ff,>fc,>48,>30
+
+* Fixed-core VDP strings reclaim direct-mapped extension bytes for the moving
+* sprite code while preserving their stable addresses across both builds.
+VDSTX  text 'Sprites: 8x8 / 16x16 / Mag'
+       byte 0
+VDRTTL text 'VDP Sprite Status Results'
+       byte 0
+VDCOLL text 'COLL FLAG:'
+       byte 0
+VDFIFT text '5TH-SPR FLAG:'
+       byte 0
+VDPDONE text 'CHECK SHAPES, SIZE AND COLORS'
+       byte 0
+
+* Direct machine-specific matrix decoder.  The translated byte remains visible
+* on the preceding line, while this service names every electrically distinct
+* pair.  The 1979 /4 uses five columns; /4A, QI, and recovery-mode unknown
+* systems use six.  Three-key rectangles can ghost on a diode-less keyboard
+* and are deliberately reported as MORE.
+* KMAT - scan the physical matrix and render a two-key chord into KBUF.
+* Empty matrix contacts are exposed as AUX-1/AUX-2 for hardware experiments.
+* More than two simultaneous positions are reported as "+ MORE" rather than
+* guessed, which avoids presenting matrix ghosting as a decoded key.
+KMAT   mov  r11,@KMSAVE
+       li   r6,KBUF
+       li   r5,KMPFX
+       bl   @KMAPND
+       clr  @KMFIRST
+       clr  @KMCOUNT
+       clr  r1
+       li   r7,>7f00              * ABI 1.1 /4A and QI matrix table
+       li   r8,6
+       mov  @SYSID,r0
+       ci   r0,ID994
+       jne  KMCOL
+       li   r7,>7f30              * stock /4 five-column matrix table
+       li   r8,5
+       clr  r12
+       sbo  21                   * Alpha Lock isolated from the main matrix
+KMCOL  mov  r1,r0
+       swpb r0
+       li   r12,>0024
+       ldcr r0,3
+       li   r12,6
+       seto r4
+       stcr r4,8
+       inv  r4
+       mov  r1,r0
+       jne  KSROWS
+       mov  r4,@KRAW              * preserve column zero for modifier-only UI
+KSROWS
+       li   r3,>0100
+       li   r2,8
+KMROW  czc  r3,r4
+       jeq  KMNEXT
+       clr  r0
+       movb *r7,r0
+       jeq  KMNEXT               * physically empty matrix position
+       mov  r0,@KMTOK
+       mov  @KMCOUNT,r5
+       ci   r5,2
+       jl   KMKEEP
+       jne  KMNEXT
+       li   r5,KMMORE
+       bl   @KMAPND
+       inc  @KMCOUNT
+       jmp  KMNEXT
+KMKEEP mov  r5,r5
+       jeq  KMFST
+       mov  @KMFIRST,r5
+       ci   r5,>8200             * keep an already-leading named modifier
+       jeq  KMORD
+       ci   r5,>8300
+       jeq  KMORD
+       ci   r5,>8400
+       jeq  KMORD
+       mov  @KMTOK,r0            * otherwise promote a trailing modifier
+       ci   r0,>8200
+       jeq  KMREV
+       ci   r0,>8300
+       jeq  KMREV
+       ci   r0,>8400
+       jeq  KMREV
+KMORD
+       ci   r5,>8200             * FCTN
+       jeq  KMDASH
+       ci   r5,>8300             * SHIFT
+       jeq  KMDASH
+       ci   r5,>8400             * CTRL
+       jeq  KMDASH
+       li   r5,KMPLUS
+       jmp  KMSEP
+KMDASH li   r5,KMDH
+KMSEP  bl   @KMAPND
+       jmp  KMTOKA
+KMREV  li   r6,KBUF
+       li   r5,KMPFX
+       bl   @KMAPND
+       mov  @KMTOK,r0
+       bl   @KMAPTK
+       li   r5,KMDH
+       bl   @KMAPND
+       mov  @KMFIRST,r0
+       bl   @KMAPTK
+       jmp  KMINC
+KMFST  mov  @KMTOK,@KMFIRST
+KMTOKA mov  @KMTOK,r0
+       bl   @KMAPTK
+KMINC  inc  @KMCOUNT
+KMNEXT inc  r7
+       sla  r3,1
+       dec  r2
+       jne  KMROW
+       inc  r1
+       dec  r8
+       jne  KMCOL
+       mov  @KMCOUNT,r0
+       jne  KMTERM
+       li   r5,KMNONE
+       bl   @KMAPND
+KMTERM clr  r0
+       li   r0,>2000             * erase remnants of a previously longer chord
+KMPAD  ci   r6,KBUF+29
+       jhe  KMPDNE
+       movb r0,*r6+
+       jmp  KMPAD
+KMPDNE clr  r0
+       movb r0,*r6
+       li   r0,>0122
+       li   r1,KBUF
+       bl   @PUTSTR
+       mov  @KMSAVE,r11
+       rt
+
+KMAPND movb *r5+,*r6+
+       jne  KMAPND
+       dec  r6                    * next append overwrites the terminator
+       rt
+
+* Append token R0 to KBUF. Printable tokens occupy the high byte; named
+* tokens >80..>86 index the compact pointer table below.
+KMAPTK mov  r11,r10
+       ci   r0,>8000
+       jhe  KMPTSP
+       movb r0,*r6+
+       b    *r10
+KMPTSP ai   r0,>8000
+       srl  r0,7
+       mov  r0,r5                 * TMS9900 does not permit R0 as index register
+       mov  @KMSPTR(r5),r5
+       bl   @KMAPND
+       b    *r10
+
+KMPFX  text 'PRESSED: '
+       byte 0
+KMPLUS text ' + '
+       byte 0
+KMDH   text '-'
+       byte 0
+KMMORE text ' + MORE'
+       byte 0
+KMNONE text 'NONE'
+       byte 0
+KMSPC  text 'SPACE'
+       byte 0
+KMENT  text 'ENTER'
+       byte 0
+KMFCT  text 'FCTN'
+       byte 0
+KMSHF  text 'SHIFT'
+       byte 0
+KMCTL  text 'CTRL'
+       byte 0
+KMAUX1 text 'AUX-1'
+       byte 0
+KMAUX2 text 'AUX-2'
+       byte 0
+       even
+KMSPTR data KMSPC,KMENT,KMFCT,KMSHF,KMCTL,KMAUX1,KMAUX2
+
+* The original MegaDemo bank-18 effect fits in the otherwise-unused fixed-core
+* ROM gap.  build.ps1 first reassembles it for >D000 in the tester's own U7
+* SRAM, then embeds the exact relocated image here.  Keeping the initializer,
+* frame loop, collision helpers, sine table, and color tables together avoids
+* timing drift from a hand-translated version and does not require 32K RAM.
+       aorg >f876
+MDFXRM equ  $
+       bcopy "../build/megademo-splitscreen3-u7.bin"
+
+* The GROM read-path status is intentionally descriptive.  Matching repeated
+* reads prove bus stability, not that a GROM is installed or recognized.  An
+* all-zero checksum set is called out as no data with a question mark because
+* checksum arithmetic alone cannot prove physical absence.
+       aorg >fdae
+PUTGRS mov  r11,r12
+       mov  @GRSUM0,r1
+       soc  @GRSUM1,r1
+       soc  @GRSUM2,r1
+       jne  PGRCHK
+       li   r1,NODATX
+       jmp  PGRPUT
+PGRCHK mov  @FLAGS,r1
+       andi r1,FGROM
+       jne  PGRBAD
+       li   r1,STABTX
+       jmp  PGRPUT
+PGRBAD li   r1,UNSTTX
+PGRPUT bl   @PUTSTR
+       b    *r12
+STABTX text 'STABLE'
+       byte 0
+UNSTTX text 'UNSTABLE'
+       byte 0
+NODATX text 'NO DATA?'
+       byte 0
+
+* ---------------------------------------------------------------------------
+* Fixed-core ABI for the direct-mapped >6000 extension.
+*
+* R8 selects a service.  The branch (rather than BL) preserves the caller's
+* R11, so each target returns directly to extension code.  Keep this entry at
+* >FE00: it is the only fixed internal address the extension calls.
+* ---------------------------------------------------------------------------
+
+       aorg >fdf8
+       data >d1a6,>0101         * service ABI marker/version
+
+       aorg >fe00
+* SVCENT - versioned extension gateway.
+* In: R8=service number; other inputs are service-specific.
+* Out/clobbers: service-specific. Invalid selectors return without action.
+SVCENT ci   r8,10
+       jh   SVCBAD
+       sla  r8,1
+       mov  @SVCTAB(r8),r8
+       b    *r8
+SVCBAD
+       rt
+SVCTAB data TXTINI,PUTSTR,PUTHEX,VDPTST,SCREEN,MUTE
+       data SVCKEY,LEDPAT,SETAW,MAIN,KMAT
+
+* SVCKEY - firmware-independent translated-key service.
+* Scan all physical columns and
+* return the sole non-modifier key in >8375 (>FF means none/ambiguous).  Shift
+* punctuation is normalized here; Control/FCTN names and special codes are
+* completed by the extension's direct-matrix layer.  Modifier-only input is
+* still visible on that layer even though it has no ASCII byte.
+SVCKEY lwpi >83e0                 * preserve the extension's complete workspace
+       li   r9,>ff00
+       clr  r6                    * number of non-modifier keys
+       clr  r5                    * Shift seen
+       clr  r1                    * column 0
+       li   r7,>7f00              * ABI 1.1 /4A and QI matrix table
+       li   r10,6
+       mov  @SYSID,r0
+       ci   r0,ID994
+       jne  KSMACH
+       li   r7,>7f30              * stock /4 has a distinct five-column matrix
+       li   r10,5
+KSMACH
+       clr  r12
+       sbo  21                    * keep Alpha Lock out of the row input
+KSCOL  mov  r1,r0
+       swpb r0
+       li   r12,>0024
+       ldcr r0,3
+       li   r12,>0006
+       seto r4
+       stcr r4,8
+       inv  r4
+       li   r3,>0100
+       li   r2,8
+KSROW  czc  r3,r4
+       jeq  KSNEXT
+       clr  r0
+       movb *r7,r0
+       jeq  KSNEXT                * physically empty matrix position
+       ci   r0,>8300
+       jne  KSNMOD
+       inc  r5                    * Shift token
+       jmp  KSNEXT
+KSNMOD ci   r0,>8200
+       jhe  KSNEXT                * FCTN, CTRL, and auxiliary contacts
+       inc  r6
+       ci   r6,1
+       jne  KSMULT
+       mov  r7,@KMTOK             * retain position for the /4 shift legend
+       mov  r0,r9
+       ci   r9,>8000
+       jne  KSENT
+       li   r9,>2000              * SPACE token -> ASCII space
+       jmp  KSNEXT
+KSENT  ci   r9,>8100
+       jne  KSNEXT
+       li   r9,>0d00              * ENTER token -> ASCII carriage return
+       jmp  KSNEXT
+KSMULT li   r9,>ff00              * two ordinary keys are ambiguous
+KSNEXT inc  r7
+       sla  r3,1
+       dec  r2
+       jne  KSROW
+       inc  r1
+       dec  r10
+       jne  KSCOL
+       mov  r5,r5
+       jeq  KSRET
+       mov  @SYSID,r0
+       ci   r0,ID994
+       jne  KS4ASH
+       mov  @KMTOK,r2
+       ai   r2,40                 * positional /4 SHIFT table follows K4TAB
+       movb *r2,r9
+       jmp  KSRET
+KS4ASH
+       mov  r9,r0
+       srl  r0,8
+       ai   r0,>ffe0              * ASCII >20 becomes table index zero
+       ci   r0,>0040
+       jhe  KSRET
+       mov  r0,r2
+       movb @>7f80(r2),r9         * ABI 1.1 /4A shift table in the extension
+KSRET  movb r9,@>8375
+       lwpi WRKSP
+       rt
+
+* LOAD entry and vector. LOAD performs only device acknowledgement and the
+* minimum display-disable transaction before MAIN establishes all other state.
+* The image is finalized to a zero 16-bit word sum
+* by build.ps1, using the correction word at >FFFA.
+       aorg >ff00
+LOAD   movb @VDPST,r0
+       movb @GROMRD,r0
+       li   r0,>8081             * 16 KiB VRAM, display disabled
+       movb r0,@VDPWA
+       swpb r0
+       movb r0,@VDPWA
+       b    @MAIN
+
+       aorg >fff8
+       data >d1a6                * fixed image marker
+       data >0000                * build-time checksum correction
+       data WRKSP,LOAD
+       end

@@ -1,0 +1,8 @@
+*.a99 text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.md text eol=lf
+*.txt text eol=lf
+*.bin binary
+*.pdf binary
+*.svg text eol=lf

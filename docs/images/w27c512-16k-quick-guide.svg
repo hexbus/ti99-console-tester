@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900">
+  <rect width="1400" height="900" fill="#ffffff"/>
+  <style>
+    text { font-family: Arial, Helvetica, sans-serif; fill: #172033; }
+    .title { font-size: 38px; font-weight: 700; }
+    .head { font-size: 25px; font-weight: 700; }
+    .body { font-size: 21px; }
+    .small { font-size: 18px; }
+    .chip { fill: #f4f6f8; stroke: #172033; stroke-width: 4; }
+    .pin { fill: #ffffff; stroke: #172033; stroke-width: 2; }
+    .addr { stroke: #e57a18; stroke-width: 8; fill: none; }
+    .ce { stroke: #c12d83; stroke-width: 8; fill: none; }
+    .sel { stroke: #007f91; stroke-width: 8; fill: none; }
+    .power { stroke: #b81f2d; stroke-width: 8; fill: none; }
+    .box { fill: #f8fafc; stroke: #9aa7b6; stroke-width: 2; rx: 14; }
+    .warn { fill: #fff3cd; stroke: #b7791f; stroke-width: 3; rx: 14; }
+  </style>
+
+  <text x="50" y="58" class="title">W27C512 16 KiB modification - quick visual guide</text>
+  <text x="50" y="92" class="body">Top view, notch upward. Lift pins 1, 20, 26 and 27 so they do not enter U3.</text>
+
+  <rect x="500" y="150" width="330" height="560" rx="22" class="chip"/>
+  <path d="M625 150 a40 40 0 0 0 80 0" fill="#ffffff" stroke="#172033" stroke-width="4"/>
+  <text x="665" y="400" text-anchor="middle" class="head">W27C512</text>
+  <text x="665" y="435" text-anchor="middle" class="body">TOP VIEW</text>
+
+  <g class="body">
+    <rect x="456" y="185" width="44" height="36" class="pin"/><text x="478" y="211" text-anchor="middle">1</text>
+    <rect x="830" y="185" width="44" height="36" class="pin"/><text x="852" y="211" text-anchor="middle">28</text>
+    <rect x="830" y="227" width="44" height="36" class="pin"/><text x="852" y="253" text-anchor="middle">27</text>
+    <rect x="830" y="269" width="44" height="36" class="pin"/><text x="852" y="295" text-anchor="middle">26</text>
+    <rect x="830" y="521" width="44" height="36" class="pin"/><text x="852" y="547" text-anchor="middle">20</text>
+    <rect x="456" y="647" width="44" height="36" class="pin"/><text x="478" y="673" text-anchor="middle">14</text>
+  </g>
+
+  <rect x="55" y="160" width="310" height="245" class="box"/>
+  <text x="80" y="198" class="head">1  Address wires</text>
+  <text x="80" y="244" class="body">W27 pin 1  to U2 pin 3</text>
+  <text x="80" y="282" class="body">W27 pin 27 to U2 pin 2</text>
+  <text x="80" y="320" class="body">W27 pin 26 to U2 pin 1</text>
+  <text x="80" y="368" class="small" fill="#9b4b00">Orange wires; keep them short.</text>
+
+  <path d="M456 203 H410 V225 H365" class="addr"/>
+  <path d="M874 245 H930 V275 H365" class="addr"/>
+  <path d="M874 287 H955 V330 H365" class="addr"/>
+
+  <rect x="940" y="140" width="410" height="360" class="box"/>
+  <text x="965" y="180" class="head">2  Build the /CE node</text>
+  <text x="965" y="220" class="body">Both unbanded diode ends join</text>
+  <text x="965" y="250" class="body">at lifted W27 pin 20.</text>
+  <text x="965" y="300" class="body">Banded end 1 to U2 pin 12 / Y3</text>
+  <text x="965" y="334" class="body">Banded end 2 to U2 pin 7 / Y7</text>
+  <text x="965" y="390" class="body">2.2K resistor from the common</text>
+  <text x="965" y="424" class="body">node to verified +5 V.</text>
+  <text x="965" y="470" class="small">Use 1N5817, 1N5818 or 1N5819.</text>
+
+  <circle cx="920" cy="539" r="11" fill="#c12d83"/>
+  <path d="M874 539 H920" class="ce"/>
+  <path d="M920 539 H1010" class="sel"/>
+  <path d="M920 539 V625 H1010" class="sel"/>
+  <polygon points="1000,525 1030,539 1000,553" fill="#007f91"/>
+  <line x1="1032" y1="521" x2="1032" y2="557" stroke="#172033" stroke-width="5"/>
+  <polygon points="1000,611 1030,625 1000,639" fill="#007f91"/>
+  <line x1="1032" y1="607" x2="1032" y2="643" stroke="#172033" stroke-width="5"/>
+  <text x="1050" y="546" class="body">band to U2 pin 12 / Y3</text>
+  <text x="1050" y="632" class="body">band to U2 pin 7 / Y7</text>
+  <path d="M920 528 V485 H890 V455 H950 V425 H890 V395 H950 V365" class="power"/>
+  <text x="830" y="345" class="body" fill="#b81f2d">+5 V</text>
+  <text x="960" y="415" class="small" fill="#b81f2d">2.2K</text>
+
+  <rect x="55" y="470" width="520" height="350" class="warn"/>
+  <text x="80" y="512" class="head">3  Check before power</text>
+  <text x="80" y="558" class="body">- Pins 1, 20, 26 and 27 miss their U3 pads.</text>
+  <text x="80" y="596" class="body">- Pin 1 reaches U2 pin 3 only.</text>
+  <text x="80" y="634" class="body">- Pin 27 reaches U2 pin 2 only.</text>
+  <text x="80" y="672" class="body">- Pin 26 reaches U2 pin 1 only.</text>
+  <text x="80" y="710" class="body">- Pin 20 reaches the new common node only.</text>
+  <text x="80" y="748" class="body">- Decoder outputs are never tied together.</text>
+  <text x="80" y="790" class="head">Never work on the board while powered.</text>
+
+  <rect x="650" y="735" width="700" height="90" class="box"/>
+  <text x="675" y="774" class="head">4  Program the complete 65,536-byte HEXDIAG07.BIN</text>
+  <text x="675" y="807" class="small">Blank-check, program, verify, then test with no cartridge or memory expansion attached.</text>
+</svg>

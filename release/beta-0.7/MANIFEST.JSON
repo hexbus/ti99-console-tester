@@ -1,0 +1,37 @@
+{
+  "schema": "ti99-console-tester-release-v1",
+  "version": "0.7",
+  "status": "PUBLIC_BETA",
+  "canonical_repository": "https://github.com/hexbus/ti99-console-tester",
+  "credit": "Jon Guidry (hexbus)",
+  "program_this_file": "HEXDIAG07.BIN",
+  "files": {
+    "HEXDIAG07.BIN": {
+      "purpose": "complete 16 KiB W27C512 programmer image",
+      "size_bytes": 65536,
+      "sha256": "8b557bb4fef469cce6e6a91f8d44b40402afcbba199cfb119a0f7ed6d5efbc83",
+      "layout": "extension at >6000->7FFF; core at >E000->FFFF; all other bytes >FF"
+    },
+    "HEX8K07.BIN": {
+      "purpose": "first-test W27C512 image with eight identical core banks",
+      "size_bytes": 65536,
+      "sha256": "7b1213e16d2e7b4da57c936d9f8daf27b0ce75f94bb3e049a93eec6f258d3f12"
+    },
+    "HEXCORE7.BIN": {
+      "purpose": "raw fixed 8 KiB core at >E000",
+      "size_bytes": 8192,
+      "sha256": "4c0964dcbec329be96683a376d317683366e81b8b3988a35dc727b99eaa44df8"
+    },
+    "HEXEXT07.BIN": {
+      "purpose": "raw 8 KiB extension at >6000",
+      "size_bytes": 8192,
+      "sha256": "097b797208928f53ead2b2c15f564a06c4ca1adfa91d17d4a01e3e1ee99d3c2f"
+    }
+  },
+  "runtime": {
+    "tester_sram": ">C000->DFFF",
+    "megademo_runtime": ">D000->D537",
+    "load_vector": ">C000,>FF00",
+    "core_extension_abi": "1.1"
+  }
+}
