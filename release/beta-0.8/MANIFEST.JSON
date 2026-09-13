@@ -4,6 +4,13 @@
   "status": "PUBLIC_BETA",
   "canonical_repository": "https://github.com/hexbus/ti99-console-tester",
   "credit": "Jon Guidry (hexbus)",
+  "third_party_licenses": {
+    "pico9918tool_detector": {
+      "copyright": "Copyright (c) 2024 Troy Schrapel",
+      "license": "MIT",
+      "notice_file": "TROY-MIT.TXT"
+    }
+  },
   "program_this_file": "HEXDIAG08.BIN",
   "files": {
     "HEXDIAG08.BIN": {

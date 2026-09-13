@@ -26,6 +26,18 @@ table is identified in `src/HEXDIAG.a99`. This material is not offered under
 Apache-2.0 by this repository. Generated ROMs combine the project's original
 Apache-2.0 code with this separately permitted, attributed material.
 
+## Troy Schrapel enhanced-VDP detector
+
+The enhanced-VDP identification section in `src/HEXDIAG.a99` adapts the
+F18A/Pico9918 detector supplied by Troy Schrapel in his `pico9918tool` project.
+It uses the published unlock sequence, six-byte GPU execution probe, and status
+register identification masks. Troy supplied the code with permission under
+the MIT License.
+
+Copyright (c) 2024 Troy Schrapel. The complete MIT notice is preserved in
+`LICENSES/MIT-Troy-Schrapel.txt` and must accompany copies or substantial
+portions of that code.
+
 ## Community credits
 
 The on-ROM credits recognize Geoff Trott, Jon Guidry, Jim F., Takeo N., Rasmus,
@@ -46,5 +58,6 @@ compatibility description and reproducible identification.
 - Files marked `SPDX-License-Identifier: CC-BY-4.0` are covered by CC BY 4.0.
 - The separately permitted MegaDemo-derived material follows the boundary
   above and must retain its attribution.
+- The enhanced-VDP detector retains Troy Schrapel's copyright and MIT notice.
 - Redistributors must retain `NOTICE`, credit Jon Guidry (hexbus), and link to
   the canonical repository.

@@ -11,6 +11,12 @@ The project adapts Geoff Trott's Console Tester hardware and includes
 separately permitted, attributed MegaDemo-derived raster and PSG material.
 See docs/PROVENANCE.md for the complete credit and licensing boundary.
 
+The enhanced-VDP detection section adapts code supplied by Troy Schrapel from
+his pico9918tool project:
+Copyright (c) 2024 Troy Schrapel
+Licensed under the MIT License.
+See LICENSES/MIT-Troy-Schrapel.txt for the complete notice.
+
 Redistributions and derivative works must retain the notices required by the
 applicable Apache-2.0 and CC-BY-4.0 licenses, credit Jon Guidry (hexbus), and
 identify the canonical repository above as the original project.

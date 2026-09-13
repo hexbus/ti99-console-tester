@@ -102,7 +102,8 @@ yellow fifth entry; that is a configuration difference, not a failure.
 
 Source code and build/test tooling are Apache-2.0. Original documentation and
 the illustrated modification material are CC BY 4.0. MegaDemo-derived material
-has its own permission and attribution boundary; see
+has its own permission and attribution boundary. The enhanced-VDP detector
+adapts MIT-licensed code supplied by Troy Schrapel; see
 [`LICENSE.md`](LICENSE.md), [`NOTICE`](NOTICE), and
 [`docs/PROVENANCE.md`](docs/PROVENANCE.md).
 

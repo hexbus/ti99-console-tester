@@ -1413,8 +1413,10 @@ MDPSGE equ  $
 * Enhanced-VDP identification
 * ---------------------------------------------------------------------------
 *
-* The unlock and six-byte GPU test follow Troy Schrapel's MIT-licensed
-* PICO9918/F18A detector: https://github.com/visrealm/pico9918 .  Writing the
+* The unlock and six-byte GPU test adapt Troy Schrapel's pico9918tool
+* PICO9918/F18A detector, supplied with permission under the MIT License.
+* Copyright (c) 2024 Troy Schrapel. See LICENSES/MIT-Troy-Schrapel.txt.
+* Original project: https://github.com/visrealm/pico9918 .  Writing the
 * program to >3F00 leaves its first byte at >04 on a
 * legacy TMS VDP.  An F18A-compatible GPU executes CLR @>3F00 and changes that
 * byte to zero. Only after that positive execution test do we select enhanced

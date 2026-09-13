@@ -55,7 +55,8 @@ interfaces included TMS family, F18A, and Pico9918.
 Source and build tooling are Apache-2.0. Original documentation and illustrated
 modification material are CC BY 4.0. The attributed MegaDemo-derived material
 has the separate permission boundary described in the repository's
-`docs/PROVENANCE.md`.
+`docs/PROVENANCE.md`. The enhanced-VDP detector adapts code supplied by Troy
+Schrapel under the MIT License; the complete notice is in `TROY-MIT.TXT`.
 
 Credit **Jon Guidry (hexbus)** and link to the original project:
 [github.com/hexbus/ti99-console-tester](https://github.com/hexbus/ti99-console-tester).
