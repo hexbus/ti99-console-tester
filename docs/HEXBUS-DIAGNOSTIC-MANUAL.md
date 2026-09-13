@@ -1,10 +1,10 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
-# 16 KiB Diagnostic BIOS v0.7
+# 16 KiB Diagnostic BIOS
 
 ## Console Tester operator and modification manual
 
 github.com/hexbus - September 2026
-Public beta - use with caution
+Public Beta 0.8 - use with caution
 
 This ROM turns the Geoff Trott/SHIFT838 Console Tester V1 into a stand-alone
 diagnostic for the TI-99/4 and TI-99/4A. It boots with the tester's LOAD
@@ -47,7 +47,7 @@ VRAM, or video output is not working.
 Orient the board component-side up with the edge connector toward the console.
 The populated row is three green lamps followed by three red lamps:
 
-| Position, front to rear | Normal v0.7 meaning | Latch mask |
+| Position, front to rear | Normal v0.8 meaning | Latch mask |
 | --- | --- | ---: |
 | Green 1 | CPU, tester SRAM, and common scratchpad passed | >1000 |
 | Green 2 | VDP port and VRAM tests passed | >2000 |
@@ -128,6 +128,13 @@ named or displayed, including the four direction keys. Control-letter chords
 are shown as CTRL-A through CTRL-Z. The two unused matrix positions are
 reported as AUX-1 and AUX-2 for modified keyboards.
 
+Both joysticks remain live whether Alpha Lock is up or down. If it is down, the
+page displays **JOYSTICKS: RELEASE ALPHA LOCK** as a precaution because Alpha
+Lock can interfere with joystick Up on an original /4A. A QI console may still
+show joystick Up correctly; the advisory does not suppress that reading. With
+Alpha Lock released, Beta 0.8 keeps the shared scan line in the state verified
+to read Up correctly on both joystick ports of an original /4A.
+
 The TI-99/4 has an uppercase-only keyboard repertoire. Its joystick selectors
 are columns 5 and 6. The TI-99/4A uses columns 6 and 7. The diagnostic scans
 the TMS9901 matrix directly and does not call the console ROM keyboard routine,
@@ -146,9 +153,28 @@ TI-99/4 path skips bitmap/Graphics-II because the original TMS9918 does not
 support it. A /4 fitted with replacement video hardware still follows the
 console profile, so the skipped stage is not proof of the fitted chip type.
 
-The sprite page checks 8x8, 16x16, magnification, collision, and fifth-sprite
-status. **COLL SET** and **5TH-SPR SET** report VDP flags; they do not mean a
-fifth sprite must be visible. Press **0** at any timed page to return.
+#### What to expect on the sprite page
+
+The test creates five sprite entries on the same scanline, but it does not
+normally show five separate objects. The first two entries occupy exactly the
+same position: a red sprite is in front of a white sprite. Together they form
+one clean red collision object. Cyan and light-blue sprites are separate. The
+yellow entry is fifth in the scanline and tests the configured sprite limit.
+
+| VDP mode | Expected visible groups |
+| --- | --- |
+| Original four sprites per scanline | Three: red collision object, cyan, and light blue. Yellow is hidden. |
+| Enhanced limit above four | Four: red collision object, cyan, light blue, and yellow. |
+
+The sequence repeats in 8x8, 16x16, and magnified modes. Shapes should remain
+intact while moving. **COLL SET** reports the intentional overlap and
+**5TH-SPR SET** reports the legacy status condition; neither message means that
+yellow must be visible. A Pico9918 configured for four sprites per scanline
+matches an original TMS VDP and shows three groups. An F18A or Pico9918 with a
+higher limit can show all four groups. Yellow therefore describes the current
+sprite-limit configuration, not a pass/fail result or a reliable VDP identity.
+
+Press **0** at any timed page to return.
 
 ### 5 - Wave and PSG music
 
@@ -250,9 +276,9 @@ Check resistance between +5 V and ground before inserting the board.
 
 ### Program and bring up the board
 
-Program the complete 65,536-byte file **build/HEXDIAG07.BIN** as a W27C512.
+Program the complete 65,536-byte file **build/HEXDIAG08.BIN** as a W27C512.
 It is byte-identical to
-**build/ti99-sidecar-diag-beta-0.7-16k-w27c512.bin**. Do not program either
+**build/ti99-sidecar-diag-beta-0.8-16k-w27c512.bin**. Do not program either
 raw 8 KiB component as though it were the positioned 64 KiB image.
 
 1. Erase and blank-check the W27C512.
@@ -285,7 +311,7 @@ expansion:
 
 The complete wiring and image layouts are kept in the
 [hardware modification guide](HARDWARE-MODIFICATION-GUIDE.md). The 32 KiB and
-40 KiB circuits are design options, not requirements for v0.7.
+40 KiB circuits are design options, not requirements for v0.8.
 
 ## Troubleshooting
 
@@ -310,7 +336,8 @@ the second window is missing.
 
 Make sure the current public-beta image is fitted. An earlier development
 build could leave VDP table pointers and sprites active after the pattern
-test. Version 0.7 restores the normal screen tables before drawing a menu.
+test. Version 0.8 erases both sprite tables and restores the normal screen
+tables before drawing a menu.
 
 ### CUSTOM/MIXED - STABLE appears
 
@@ -319,9 +346,11 @@ match one complete stock profile.
 
 ### Replacement video hardware behaves differently
 
-Record the console model and the fitted device. A Pico9918 or F18A may differ
-from an original TMS9918/TMS9918A in edge cases. Version 0.7 does not claim to
-identify the fitted VDP model.
+Record the console model, the fitted device, and its configuration. Version
+0.8 identifies `TMS FAMILY`, `F18A`, `PICO9918`, or an unfamiliar
+`F18A COMPAT` interface, but it does not distinguish every original TMS die.
+The number of visible sprites can also depend on the replacement VDP's
+configured per-scanline limit.
 
 ## Further technical information
 

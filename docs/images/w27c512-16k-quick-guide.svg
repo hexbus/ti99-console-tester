@@ -79,6 +79,6 @@
   <text x="80" y="790" class="head">Never work on the board while powered.</text>
 
   <rect x="650" y="735" width="700" height="90" class="box"/>
-  <text x="675" y="774" class="head">4  Program the complete 65,536-byte HEXDIAG07.BIN</text>
+  <text x="675" y="774" class="head">4  Program the complete 65,536-byte HEXDIAG08.BIN</text>
   <text x="675" y="807" class="small">Blank-check, program, verify, then test with no cartridge or memory expansion attached.</text>
 </svg>

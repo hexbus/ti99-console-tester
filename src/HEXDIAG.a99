@@ -1,7 +1,7 @@
 * SPDX-License-Identifier: Apache-2.0
 * Copyright 2026 Jon Guidry (hexbus)
 * Project: https://github.com/hexbus/ti99-console-tester
-* TI-99/4 and TI-99/4A sidecar Console Tester - Beta 0.7 fixed core.
+* TI-99/4 and TI-99/4A sidecar Console Tester - Beta 0.8 fixed core.
 *
 * PURPOSE
 *   Bring up a console from the side port without depending on a working
@@ -52,6 +52,7 @@ EXTSTA  equ  >c036
 FAILMS  equ  >c038             * expected XOR actual, TI bit order in high byte
 VDP1SH  equ  >c03a             * VDP R1 shadow, also copied to console SAVVDP
 VDPTMP  equ  >c03c             * scratch word used while updating VDP1SH
+VDPID   equ  >c03e             * VDP class: 0 TMS, 1 F18A, 2 PICO, 3 compatible
 KRAW    equ  >c048             * column-zero input mask shared with extension
 KBUF    equ  >c080             * extension keyboard display buffer
 KMSAVE  equ  >c0f8             * direct-matrix service return link
@@ -89,6 +90,7 @@ LVDPOK  equ  >2000
 * ---------------------------------------------------------------------------
 
        aorg >e000
+CSTART equ  $
        byte >aa,>01
        data >0000,>0000,PROGLS,>0000,>0000,>0000,>0000
 
@@ -172,8 +174,9 @@ SCRTOK mov  @FLAGS,r0
 RAMLED mov  r15,@LEDSTA
        movb r15,@LEDOUT
 
-* The VRAM test is deliberately destructive; this ROM owns the display.
-       bl   @VDPINI
+* F18DET performs a self-contained enhanced-VDP probe, then restores the
+* complete legacy register set before the destructive VRAM test begins.
+       bl   @F18DET
        bl   @VDPTST
        mov  r0,r0
        jeq  VDPOK
@@ -547,7 +550,7 @@ EXTST  mov  r11,r14
        ci   r0,>d1a6
        jne  EXTBAD
        mov  @>602c,r0
-       ci   r0,>1606
+       ci   r0,>1608
        jne  EXTBAD
        mov  @>6030,r0           * extension requires fixed-core ABI 1.1
        ci   r0,>0101
@@ -641,6 +644,12 @@ SCREEN mov  r11,r13
        li   r0,>0198
        li   r2,FSELF
        bl   @PUTRES
+
+       li   r0,>01a2             * row 13: detected VDP interface and version
+       li   r1,VDPDTX
+       bl   @PUTSTR
+       li   r0,>01b1
+       bl   @PUTVDP
 
        li   r0,>01c2
        li   r1,PROFTX
@@ -748,6 +757,18 @@ SCBORD bl   @VDPREG
 * frame glyphs, clear VRAM, draw the frame, then enable the display.
 TXTINI mov  r11,r12
        bl   @VDPINI
+* The integrated MegaDemo uses a second SAT at >3800 for its raster-timing
+* sprites. Terminate and erase that complete table before touching the text
+* page. This remains necessary even if a marginal/legacy VDP did not accept
+* the immediately preceding R5 restore on the first attempt.
+       li   r0,>3800
+       bl   @SETAW
+       li   r1,>d000
+       li   r2,>0080
+SCMSAT movb r1,@VDPWD
+       nop
+       dec  r2
+       jne  SCMSAT
        clr  r0
        bl   @SETAW
        li   r1,>2000
@@ -809,11 +830,26 @@ SCCOL  movb r1,@VDPWD
        movb r1,@VDPWD
        li   r1,>6f00
        movb r1,@VDPWD
+* A demo may leave a live SAT behind. Erase the complete Graphics-I sprite
+* attribute area instead of relying on one terminator byte surviving the
+* handoff. Filling every byte with >D0 makes every possible entry an end
+* marker and removes stale X/pattern/color fields before display is enabled.
        li   r0,>0300
+       bl   @SETAW
        li   r1,>d000
-       bl   @VRW1
+       li   r2,>0080
+SCSAT  movb r1,@VDPWD
+       nop
+       dec  r2
+       jne  SCSAT
        bl   @SCRFRM
        bl   @VDPINI              * reassert every table register after rebuild
+       li   r0,>3800              * kill MegaDemo timing sprites a final time
+       li   r1,>d000
+       bl   @VRW1
+       li   r0,>0300              * reassert SAT termination after final reset
+       li   r1,>d000
+       bl   @VRW1
        li   r0,>e081             * 16 KiB VRAM, display and VBlank IRQ enabled
        bl   @VDPREG
        b    *r12
@@ -1078,7 +1114,7 @@ FAILBP mov  r11,r10
 
 TITLE  text 'TI-99/4 and 4A Tester'
        byte 0
-SUBTTL text 'Automatic Results - Beta 0.7'
+SUBTTL text 'Automatic Results - Beta 0.8'
        byte 0
 CPUTXT text 'CPU CORE'
        byte 0
@@ -1105,6 +1141,8 @@ ROMTXT text 'CPU ROM READ'
 DIAGTX text 'DIAG ROM SELF TEST'
        byte 0
 GROMTX text 'GROM READ PATH  '
+       byte 0
+VDPDTX text 'VIDEO CHIP:'
        byte 0
 PROFTX text 'FIRMWARE SET:'
        byte 0
@@ -1175,6 +1213,7 @@ G1EXP  data >1b7b,>1b99,>0000
 G2EXP  data >9ec3,>9adc,>0000
 
 FONT
+FONTBEG equ  $
 * 32-47: space through slash
        byte >00,>00,>00,>00,>00,>00,>00,>00
        byte >20,>20,>20,>20,>20,>00,>20,>00
@@ -1277,17 +1316,10 @@ FONT
        byte >00,>68,>90,>00,>00,>00,>00,>00
        byte >aa,>55,>aa,>55,>aa,>55,>aa,>55
 
-* Short shared VDP strings occupy the otherwise-unused gap below the asset
-* block, reclaiming direct-mapped extension bytes for the moving showcase.
-       aorg >f070
-VSTART text 'ANY KEY STARTS; 0 MAIN MENU'
-       byte 0
-VDPAUTO text 'AUTO-ADVANCE: TWO SEC EACH'
-       byte 0
-VDPNEXT text 'TEXT, MULTI, BITMAP, SPRITES'
-       byte 0
-VDPN4  text 'TEXT, MULTI, SPRITES'
-       byte 0
+* FONTEND is checked by build.ps1. The following fixed music block must never
+* be allowed to move backward over the 768-byte ASCII 32..127 font.
+FONTEND equ  $
+CEND   equ  $                    * end of variable core content
 
 * ---------------------------------------------------------------------------
 * Fixed-core read-only asset ABI for the >6000 extension.
@@ -1297,6 +1329,7 @@ VDPN4  text 'TEXT, MULTI, SPRITES'
 * ---------------------------------------------------------------------------
 
        aorg >f100
+MUSBEG equ  $
 * Exact 298-byte MegaDemo PSG phrase used by the released Pyuuta/Tutor v1.0
 * diagnostic.  Do not regenerate or retune it: the phrase begins and ends at
 * the same PSG state and is repeated eight times by the extension.  Format is
@@ -1376,9 +1409,161 @@ MDPSG
 MDPSGE equ  $
        even
 
+* ---------------------------------------------------------------------------
+* Enhanced-VDP identification
+* ---------------------------------------------------------------------------
+*
+* The unlock and six-byte GPU test follow Troy Schrapel's MIT-licensed
+* PICO9918/F18A detector: https://github.com/visrealm/pico9918 .  Writing the
+* program to >3F00 leaves its first byte at >04 on a
+* legacy TMS VDP.  An F18A-compatible GPU executes CLR @>3F00 and changes that
+* byte to zero. Only after that positive execution test do we select enhanced
+* status register 1 to distinguish a PICO9918 from a genuine F18A.
+*
+* VDPID encoding: >0000 TMS family, >0100 F18A, >0200 PICO9918, >0300 another
+* F18A-compatible implementation. Status 14 is deliberately not shown as a
+* device firmware version: on both F18A and PICO9918 it reports the F18A
+* compatibility version. Full PICO firmware requires its configuration API.
+* The probe intentionally identifies the programming interface, not an exact
+* legacy TMS9918/TMS9918A die.  F18A-compatible replacements may pass it.
+       aorg >f22a
+F18BEG equ  $
+F18DET mov  r11,r14
+       clr  @VDPID
+       bl   @VDPINI              * display and VBlank IRQ off; known legacy R1
+
+       li   r0,>c281             * Troy sequence: R1=>C2 while unlocking
+       bl   @VDPREG
+* VDPREG consumes and byte-swaps R0, so do not use two helper calls here.
+* Reload and emit both complete >1C,>B9 pairs explicitly: an F18A/PICO9918
+* unlocks only when register 57 receives the same value twice in succession.
+       li   r0,>1cb9             * value >1C -> enhanced register 57
+       movb r0,@VDPWA
+       swpb r0
+       movb r0,@VDPWA
+       li   r0,>1cb9             * repeat the complete pair to unlock
+       movb r0,@VDPWA
+       swpb r0
+       movb r0,@VDPWA
+       li   r0,>e281             * restore R1=>E2 before starting the GPU
+       bl   @VDPREG
+
+       li   r0,>3f00
+       bl   @SETAW
+       li   r1,F18GPU
+       li   r2,6
+F18GLP movb *r1+,@VDPWD
+       nop
+       dec  r2
+       jne  F18GLP
+
+       movb @VDPST,r3           * clear any stale VBlank before GPU start
+       li   r0,>3fb6             * GPU PC MSB: enhanced register 54 = >3F
+       bl   @VDPREG
+       li   r0,>00b7             * GPU PC LSB: enhanced register 55 = >00/start
+       bl   @VDPREG
+       seto r2                   * allow one complete frame, but never hang
+F18DLY movb @VDPST,r3
+       jlt  F18RD                * status bit 7: next vertical blank reached
+       dec  r2
+       jne  F18DLY
+
+F18RD
+       li   r0,>3f00
+       bl   @SETAR
+       clr  r1
+       movb @VDPRD,r1
+       jne  F18DON               * original byte >04 means no executing GPU
+
+       li   r0,>018f             * enhanced register 15 selects status 1
+       bl   @VDPREG
+       clr  r4
+       movb @VDPST,r4
+       li   r0,>008f             * always restore status-register selector 0
+       bl   @VDPREG
+
+       mov  r4,r0
+       andi r0,>e800
+       ci   r0,>e800
+       jeq  F18PIC               * PICO9918 signature includes status bit 3
+       mov  r4,r0
+       andi r0,>e000
+       ci   r0,>e000
+       jeq  F18GEN
+       li   r0,>0300             * compatible GPU, unfamiliar status signature
+       jmp  F18SAV
+F18GEN li   r0,>0100
+       jmp  F18SAV
+F18PIC li   r0,>0200
+F18SAV mov  r0,@VDPID
+
+* Register 50 bit 7 is the documented enhanced-VDP reset/relock operation.
+* On a legacy TMS this aliases to register 2; VDPINI immediately repairs it.
+F18DON li   r0,>80b2
+       bl   @VDPREG
+       bl   @VDPINI              * undo every legacy/enhanced probe side effect
+       b    *r14
+
+* GPU program: clear its own first word and stop.  A legacy VDP merely stores
+* these six bytes, leaving >04 at >3F00 for the CPU-side comparison above.
+F18GPU data >04e0,>3f00,>0340
+
+* PUTVDP - render the implementation class stored in VDPID at R0.
+PUTVDP mov  r11,r12
+       mov  @VDPID,r4
+       jeq  PVDTMS
+       ci   r4,>0100
+       jeq  PVDF18
+       ci   r4,>0200
+       jeq  PVDPIC
+       li   r1,VDPCMP
+       bl   @PUTSTR
+       b    *r12
+PVDTMS li   r1,VDPTMS
+       bl   @PUTSTR
+       b    *r12
+PVDF18 li   r1,VDPF18
+       bl   @PUTSTR
+       b    *r12
+PVDPIC li   r1,VDPPIC
+       bl   @PUTSTR
+       b    *r12
+
+VDPTMS text 'TMS FAMILY'
+       byte 0
+VDPF18 text 'F18A'
+       byte 0
+VDPPIC text 'PICO9918'
+       byte 0
+VDPCMP text 'F18A COMPAT'
+       byte 0
+       even
+* Shared extension footer text lives in protected fixed-core space. Keeping it
+* here prevents variable-length extension text from colliding with the fixed
+* keyboard ABI tables at >7F00.
+ZEROMNU text '0 MAIN MENU'
+       byte 0
+CR7    text 'ATARIAGE TI-99 COMMUNITY'
+       byte 0
+       even
+* Shared VDP instruction strings are kept in this protected fixed-core gap.
+* Their former >F070 block silently overlaid the tail of FONT (lowercase x
+* through character 127) because xas99 permits a backward AORG.
+VSTART text 'ANY KEY STARTS; 0 MAIN MENU'
+       byte 0
+VDPAUTO text 'AUTO-ADVANCE: TWO SEC EACH'
+       byte 0
+VDPNEXT text 'TEXT, MULTI, BITMAP, SPRITES'
+       byte 0
+VDPN4  text 'TEXT, MULTI, SPRITES'
+       byte 0
+       even
+F18END equ  $                    * end of >F22A detector/text region
+
 * Preserve the fixed addresses of the VDP and bank-18 assets below.  The gap
 * is deliberate headroom left by replacing the temporary packed-song build.
        aorg >f546
+VDPBEG equ  $
 
 * Graphics-II register transaction. R1 deliberately remains display-off here;
 * the extension writes >E081 only after its name, pattern, color, and relocated
@@ -1391,12 +1576,14 @@ VDBPDT byte >81,>42,>24,>18,>18,>24,>42,>81
        byte >aa,>55,>aa,>55,>aa,>55,>aa,>55
 * Sprite test assets exported to HEXEXT.A99 at fixed ABI addresses. Four
 * consecutive 8x8 patterns are copied to VRAM >1800. DEMOAT is the five-entry
-* SAT described at VDSPRT: all Y=79, entries 0/1 overlap, and >D0 terminates.
+* SAT described at VDSPRT: all Y=79, entries 0/1 exactly overlap, and >D0
+* terminates. Red sprite 0 has priority over white sprite 1, producing one
+* clean red object while still exercising collision and fifth-sprite behavior.
 SPRITE byte >18,>3c,>7e,>ff,>ff,>7e,>3c,>18
        byte >81,>42,>24,>18,>18,>24,>42,>81
        byte >ff,>81,>bd,>a5,>a5,>bd,>81,>ff
        byte >00,>66,>ff,>ff,>7e,>3c,>18,>00
-DEMOAT byte 79,40,0,15,79,40,0,8
+DEMOAT byte 79,40,0,8,79,40,0,15
        byte 79,160,0,5,79,200,0,7
        byte 79,240,0,10
        byte >d0
@@ -1598,6 +1785,7 @@ KMAUX2 text 'AUX-2'
        byte 0
        even
 KMSPTR data KMSPC,KMENT,KMFCT,KMSHF,KMCTL,KMAUX1,KMAUX2
+VDPEND equ  $                    * end of >F546 VDP/assets region
 
 * The original MegaDemo bank-18 effect fits in the otherwise-unused fixed-core
 * ROM gap.  build.ps1 first reassembles it for >D000 in the tester's own U7
@@ -1605,14 +1793,17 @@ KMSPTR data KMSPC,KMENT,KMFCT,KMSHF,KMCTL,KMAUX1,KMAUX2
 * frame loop, collision helpers, sine table, and color tables together avoids
 * timing drift from a hand-translated version and does not require 32K RAM.
        aorg >f876
+MFXBEG equ  $
 MDFXRM equ  $
        bcopy "../build/megademo-splitscreen3-u7.bin"
+MFXEND equ  $                    * embedded image must end at >FDAE
 
 * The GROM read-path status is intentionally descriptive.  Matching repeated
 * reads prove bus stability, not that a GROM is installed or recognized.  An
 * all-zero checksum set is called out as no data with a question mark because
 * checksum arithmetic alone cannot prove physical absence.
        aorg >fdae
+GRSBEG equ  $
 PUTGRS mov  r11,r12
        mov  @GRSUM0,r1
        soc  @GRSUM1,r1
@@ -1634,6 +1825,7 @@ UNSTTX text 'UNSTABLE'
        byte 0
 NODATX text 'NO DATA?'
        byte 0
+GREND  equ  $                    * end of >FDAE GROM-results helper
 
 * ---------------------------------------------------------------------------
 * Fixed-core ABI for the direct-mapped >6000 extension.
@@ -1644,9 +1836,12 @@ NODATX text 'NO DATA?'
 * ---------------------------------------------------------------------------
 
        aorg >fdf8
-       data >d1a6,>0101         * service ABI marker/version
+ABIBEG equ  $
+ABIMRK data >d1a6,>0101         * service ABI marker/version
+ABIEND equ  $
 
        aorg >fe00
+SVCBEG equ  $
 * SVCENT - versioned extension gateway.
 * In: R8=service number; other inputs are service-specific.
 * Out/clobbers: service-specific. Invalid selectors return without action.
@@ -1743,12 +1938,14 @@ KS4ASH
 KSRET  movb r9,@>8375
        lwpi WRKSP
        rt
+SVCEND equ  $                    * end of >FE00 extension services
 
 * LOAD entry and vector. LOAD performs only device acknowledgement and the
 * minimum display-disable transaction before MAIN establishes all other state.
 * The image is finalized to a zero 16-bit word sum
 * by build.ps1, using the correction word at >FFFA.
        aorg >ff00
+LODBEG equ  $
 LOAD   movb @VDPST,r0
        movb @GROMRD,r0
        li   r0,>8081             * 16 KiB VRAM, display disabled
@@ -1756,9 +1953,12 @@ LOAD   movb @VDPST,r0
        swpb r0
        movb r0,@VDPWA
        b    @MAIN
+LODEND equ  $                    * end of >FF00 LOAD entry
 
        aorg >fff8
-       data >d1a6                * fixed image marker
+VECBEG equ  $
+ROMVEC data >d1a6                * fixed image marker
        data >0000                * build-time checksum correction
        data WRKSP,LOAD
+ROMEND equ  $                    * wraps to >0000 after >FFFF
        end

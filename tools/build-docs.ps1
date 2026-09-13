@@ -75,13 +75,14 @@ function Get-SourceFiles {
     }
 
     $sources = @()
-    $rootReadme = Join-Path $RepoRoot 'README.md'
-    if (Test-Path -LiteralPath $rootReadme) {
-        $sources += Get-Item -LiteralPath $rootReadme
-    }
+    $sources += Get-ChildItem -LiteralPath $RepoRoot -File -Filter '*.md'
     $docsRoot = Join-Path $RepoRoot 'docs'
     if (Test-Path -LiteralPath $docsRoot) {
         $sources += Get-ChildItem -LiteralPath $docsRoot -Recurse -File -Filter '*.md'
+    }
+    $releaseRoot = Join-Path $RepoRoot 'release'
+    if (Test-Path -LiteralPath $releaseRoot) {
+        $sources += Get-ChildItem -LiteralPath $releaseRoot -Recurse -File -Filter '*.md'
     }
     $sources | Sort-Object FullName -Unique
 }

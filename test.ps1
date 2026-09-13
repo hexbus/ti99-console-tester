@@ -20,6 +20,18 @@ if ($titleLength -ne 17) { throw "Unexpected title length: $titleLength" }
 $title = [Text.Encoding]::ASCII.GetString($bytes, 0x15, $titleLength)
 if ($title -ne 'TI-99/4 & 4A DIAG') { throw "Unexpected title entry: $title" }
 
+# These shared strings were moved into fixed-core headroom after Beta 0.8
+# variable extension content reached >7F00 and lost a terminating zero to the
+# keyboard ABI table. Protect both the addresses and the terminators.
+$sharedMenuText = [Text.Encoding]::ASCII.GetString($bytes, 0x1362, 12)
+if ($sharedMenuText -ne "0 MAIN MENU`0") {
+    throw 'The fixed-core 0 MAIN MENU string moved or lost its terminator'
+}
+$sharedCreditText = [Text.Encoding]::ASCII.GetString($bytes, 0x136e, 25)
+if ($sharedCreditText -ne "ATARIAGE TI-99 COMMUNITY`0") {
+    throw 'The fixed-core AtariAge credit string moved or lost its terminator'
+}
+
 $imageText = [Text.Encoding]::ASCII.GetString($bytes)
 $activeCoreSource = ((Get-Content -LiteralPath (Join-Path $projectRoot 'src\HEXDIAG.a99')) |
     ForEach-Object { ($_ -split '\*', 2)[0] }) -join "`n"
@@ -44,7 +56,12 @@ $requiredOperatorText = @(
     '16K EXTENSION',
     '8K MODE',
     'PRESENT',
-    'CORRUPT'
+    'CORRUPT',
+    'VIDEO CHIP:',
+    'TMS FAMILY',
+    'F18A',
+    'PICO9918',
+    'F18A COMPAT'
 )
 foreach ($label in $requiredOperatorText) {
     if (-not $imageText.Contains($label)) {
@@ -88,6 +105,72 @@ if ($megaDemoMusic.Length -ne 298 -or
     throw 'Pyuuta/Tutor v1.0 MegaDemo PSG phrase at >F100 changed'
 }
 
+# Protect the complete ASCII 32..127 font. A former backward AORG at >F070
+# overlaid the tail beginning inside lowercase x while leaving most screens
+# superficially correct, so a full-font hash is required rather than a spot
+# check of common uppercase glyphs.
+$fontBytes = [byte[]]$bytes[0x0dae..0x10ad]
+$fontSha = [Security.Cryptography.SHA256]::Create()
+try {
+    $fontHash = ($fontSha.ComputeHash($fontBytes) | ForEach-Object { $_.ToString('x2') }) -join ''
+} finally {
+    $fontSha.Dispose()
+}
+if ($fontBytes.Length -ne 0x300 -or
+    $fontHash -ne '3e856d2b111d767fd5c28ccb9b8cc6fe3f56d0256680e7ad45c1beef1913dfdf') {
+    throw 'The complete ASCII 32->127 font changed or was overlaid by a fixed block'
+}
+
+# The five-entry SAT is a diagnostic contract, not decorative artwork. Red
+# entry 0 exactly overlaps white entry 1, producing one clean visible collision
+# object; cyan and light blue consume the remaining original scanline slots;
+# yellow entry 4 exercises suppression. The final >D0 terminates the table.
+$spriteAttributeHex = [BitConverter]::ToString($bytes[0x1596..0x15aa])
+if ($spriteAttributeHex -ne '4F-28-00-08-4F-28-00-0F-4F-A0-00-05-4F-C8-00-07-4F-F0-00-0A-D0') {
+    throw "The Beta 0.8 five-sprite diagnostic SAT changed: $spriteAttributeHex"
+}
+
+# Protect the GPU feature test itself: CLR @>3F00 followed by IDLE.  This is
+# the positive F18A-compatible execution proof used before status register 1
+# is read for the implementation signature.
+$gpuProbeHex = '04-E0-3F-00-03-40'
+if (-not ([BitConverter]::ToString($bytes)).Contains($gpuProbeHex)) {
+    throw 'The six-byte F18A-compatible GPU execution probe is missing'
+}
+
+# Register 57 must receive >1C twice in immediate succession.  Keep the exact
+# two complete VDP control-port transactions because the ordinary register
+# helper byte-swaps R0 and cannot safely be called twice with one loaded value.
+$unlockHex = '02-00-1C-B9-D8-00-8C-02-06-C0-D8-00-8C-02-02-00-1C-B9-D8-00-8C-02-06-C0-D8-00-8C-02'
+if (-not ([BitConverter]::ToString($bytes)).Contains($unlockHex)) {
+    throw 'The two complete F18A/PICO9918 register-57 unlock writes changed'
+}
+
+# Register 50 bit 7 resets and relocks an enhanced VDP after identification.
+# A legacy TMS aliases this write to register 2, which VDPINI repairs next.
+$relockHex = '02-00-80-B2-06-A0'
+if (-not ([BitConverter]::ToString($bytes)).Contains($relockHex)) {
+    throw 'The enhanced-VDP register-50 reset/relock write is missing'
+}
+
+# TXTINI owns the boundary back from every visual test. Protect both complete
+# 32-entry SAT scrubs: the diagnostic table at >0300 and MegaDemo's separate
+# raster-timing table at >3800. These scrubs are defense in depth; the Beta 0.8
+# screen corruption itself was a missing string terminator at the >7F00 ABI
+# boundary, which the build script now checks independently.
+$textInit = [regex]::Match($activeCoreSource, '(?ms)^TXTINI\b.*?(?=^SCRFRM\b)').Value
+if (-not $textInit) { throw 'TXTINI source boundary was not found' }
+if ($textInit -notmatch '(?ms)li\s+r0,>3800\s+bl\s+@SETAW\s+li\s+r1,>d000\s+li\s+r2,>0080\s+SCMSAT\s+movb') {
+    throw 'TXTINI no longer erases the complete MegaDemo SAT at >3800'
+}
+if ($textInit -notmatch '(?ms)li\s+r0,>0300\s+bl\s+@SETAW\s+li\s+r1,>d000\s+li\s+r2,>0080\s+SCSAT\s+movb') {
+    throw 'TXTINI no longer erases the complete diagnostic SAT at >0300'
+}
+if (([regex]::Matches($textInit, '(?im)^\s*li\s+r0,>3800\b')).Count -lt 2 -or
+    ([regex]::Matches($textInit, '(?im)^\s*li\s+r0,>0300\b')).Count -lt 2) {
+    throw 'TXTINI no longer reasserts both SAT terminators after final VDP initialization'
+}
+
 $widePath = Join-Path $projectRoot 'build\ti99-sidecar-diag-w27c512.bin'
 $wide = [IO.File]::ReadAllBytes($widePath)
 if ($wide.Length -ne 65536) { throw 'Unexpected W27C512 image size' }
@@ -108,7 +191,7 @@ if ([BitConverter]::ToString($extension[0..1]) -ne 'AA-01') {
 if ([BitConverter]::ToString($extension[2..3]) -ne '01-00') {
     throw 'The 16K TI cartridge header does not advertise a program list'
 }
-if ([BitConverter]::ToString($extension[0x2a..0x2d]) -ne 'D1-A6-16-06') {
+if ([BitConverter]::ToString($extension[0x2a..0x2d]) -ne 'D1-A6-16-08') {
     throw 'Unexpected private extension signature/version at >602A'
 }
 $extensionEntry = ([uint32]$extension[0x2e] -shl 8) + [uint32]$extension[0x2f]
@@ -151,7 +234,7 @@ foreach ($forbiddenExpansionRead in @('C0-60-A0-00', 'C0-60-A0-02')) {
 $extensionText = [Text.Encoding]::ASCII.GetString($extension)
 $executableText = $imageText + $extensionText
 $requiredExtensionText = @(
-    '16 KiB Diagnostic BIOS v0.7',
+    '16 KiB Diagnostic BIOS v0.8',
     'TI-99/4 & 4A Diagnostic',
     'github.com/hexbus 9/2026',
     'BETA - USE WITH CAUTION',
@@ -166,7 +249,8 @@ $requiredExtensionText = @(
     'IDENTIFY BAD VRAM IC',
     'SIDECAR / LED TEST',
     'CREDITS',
-    'RELEASE ALPHA LOCK',
+    'ALPHA LOCK: DOWN',
+    'JOYSTICKS: RELEASE ALPHA LOCK',
     'LIVE INPUTS; HOLD 0 TO EXIT.',
     'TRANSLATED CODE >',
     'Sprites: 8x8 / 16x16 / Mag',
@@ -183,6 +267,27 @@ foreach ($label in $requiredExtensionText) {
     if (-not $executableText.Contains($label)) {
         throw "Required executable label is missing from core and extension: $label"
     }
+}
+if ($extensionText.Contains('JOYSTICKS BLOCKED UNTIL UP')) {
+    throw 'The obsolete Alpha-Lock joystick lockout returned'
+}
+
+# P5 shares the original /4A Alpha-Lock/joystick-Up path. With Alpha Lock
+# released, hardware testing established that P5 must remain low across both
+# JOYRD calls; restoring it high inside JOYRD masks Up on both selectors. Keep
+# P5 high for Alpha Lock down (to avoid a false Up) and for the TI-99/4 path.
+$keyJoystick = [regex]::Match($activeExtensionSource, '(?ms)^KEYDIR\b.*?(?=^COLSEL\b)').Value
+if (-not $keyJoystick) { throw 'KEYDIR source boundary was not found' }
+if ($keyJoystick -notmatch '(?ms)^KJOYOK\b.*?sbz\s+21.*?^KJSCAN\b.*?bl\s+@JOYRD.*?bl\s+@JOYRD') {
+    throw 'Released-Alpha-Lock path no longer holds P5 low across both joystick reads'
+}
+if ($keyJoystick -notmatch '(?ms)^KJ994\b.*?^KJP5HI\b\s+clr\s+r12\s+sbo\s+21.*?^KJCOM\b') {
+    throw 'TI-99/4 or Alpha-Lock-down path no longer restores P5 high before joystick reads'
+}
+$joyRead = [regex]::Match($activeExtensionSource, '(?ms)^JOYRD\b.*?(?=^JOYFMT\b)').Value
+if (-not $joyRead) { throw 'JOYRD source boundary was not found' }
+if ($joyRead -match '(?im)^\s*sb[oz]\s+21\b') {
+    throw 'JOYRD improperly overrides the caller-owned P5 Alpha-Lock state'
 }
 [uint32]$extensionSum = 0
 for ($i = 0; $i -lt $extension.Length; $i += 2) {
@@ -260,30 +365,37 @@ for ($i = 0; $i -lt 65536; $i++) {
     }
 }
 
-$beta07Path = Join-Path $projectRoot 'build\ti99-sidecar-diag-beta-0.7-16k-w27c512.bin'
-$beta07 = [IO.File]::ReadAllBytes($beta07Path)
-if ($beta07.Length -ne $direct.Length -or
-    (Get-FileHash -LiteralPath $beta07Path -Algorithm SHA256).Hash -ne
+$beta08Path = Join-Path $projectRoot 'build\ti99-sidecar-diag-beta-0.8-16k-w27c512.bin'
+$beta08 = [IO.File]::ReadAllBytes($beta08Path)
+if ($beta08.Length -ne $direct.Length -or
+    (Get-FileHash -LiteralPath $beta08Path -Algorithm SHA256).Hash -ne
     (Get-FileHash -LiteralPath $directPath -Algorithm SHA256).Hash) {
-    throw 'The clearly named Beta 0.7 programmer image differs from the verified direct-16K image'
+    throw 'The clearly named Beta 0.8 programmer image differs from the verified direct-16K image'
 }
 
-$tiSafePath = Join-Path $projectRoot 'build\HEXDIAG07.BIN'
+$buildManifest = Get-Content -LiteralPath (Join-Path $projectRoot 'build\manifest.json') -Raw | ConvertFrom-Json
+if ($buildManifest.version -ne '0.8' -or $buildManifest.status -ne 'PUBLIC_BETA') {
+    throw 'Build manifest does not identify the frozen Public Beta 0.8 release'
+}
+
+$tiSafePath = Join-Path $projectRoot 'build\HEXDIAG08.BIN'
 $tiSafe = [IO.File]::ReadAllBytes($tiSafePath)
 if ($tiSafe.Length -ne $direct.Length -or
     (Get-FileHash -LiteralPath $tiSafePath -Algorithm SHA256).Hash -ne
     (Get-FileHash -LiteralPath $directPath -Algorithm SHA256).Hash) {
-    throw 'The TI-safe HEXDIAG07 programmer image differs from the verified direct-16K image'
+    throw 'The TI-safe HEXDIAG08 programmer image differs from the verified direct-16K image'
 }
 
 Write-Output 'Static 27C64 layout, header, title, LOAD vector, marker, and checksum checks passed.'
 Write-Output 'Operator-facing stock/custom firmware labels are present.'
+Write-Output 'The exact F18A/PICO9918 unlock, GPU probe, identity labels, and sprite SAT are present.'
 Write-Output 'No executable source calls the console ROM KSCAN vector at >000E.'
 Write-Output 'The fixed TI-99/4A matrix, TI-99/4 matrix, and TI-99/4 SHIFT maps are byte-exact.'
+Write-Output 'The hardware-validated P5/INT7 joystick-Up policy is protected.'
 Write-Output 'All twelve printable TI-99/4A FCTN legend translations are byte-exact.'
 Write-Output 'All eight W27C512 banks exactly match the 8 KiB core.'
 Write-Output ('The executable 16K extension entry is >{0:X4} and requires core ABI 1.1.' -f $extensionEntry)
 Write-Output 'The direct 16K W27C512 image has only >6000 and >E000 populated.'
-Write-Output 'The Beta 0.7 and TI-safe programmer-image aliases exactly match that verified direct image.'
+Write-Output 'The Beta 0.8 and TI-safe programmer-image aliases exactly match that verified direct image.'
 Write-Output 'All framed-page strings fit within 30 columns; Text-mode strings fit within 40.'
 Write-Output 'All page titles use their computed centered columns.'

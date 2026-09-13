@@ -105,7 +105,7 @@ pulled-up `/CE` node through two Schottky diodes, exposing the extension at
 The complete illustrated parts list, pin-by-pin wiring sequence, diode
 orientation, continuity checklist, programming steps, and first-power test
 now have one authoritative home in the
-[v0.7 operator and modification manual](HEXBUS-DIAGNOSTIC-MANUAL.md#16-kib-w27c512-hobby-modification).
+[v0.8 operator and modification manual](HEXBUS-DIAGNOSTIC-MANUAL.md#16-kib-w27c512-hobby-modification).
 Use that procedure for the working two-diode build. The remaining scenarios
 in this document are alternatives for permanent or larger-capacity boards.
 
@@ -290,8 +290,8 @@ For the current 16K W27 hardware, use these project outputs:
 | File | Purpose |
 | --- | --- |
 | `build/ti99-sidecar-diag-w27c512.bin` | First electrical test: eight identical copies of the 8K core |
-| `build/ti99-sidecar-diag-beta-0.7-16k-w27c512.bin` | Current sparse 16K build: extension at `>6000`, fixed core at `>E000` |
-| `build/HEXDIAG07.BIN` | Byte-identical TI-safe short filename for the Beta 0.7 programmer image |
+| `build/ti99-sidecar-diag-beta-0.8-16k-w27c512.bin` | Current sparse 16K build: extension at `>6000`, fixed core at `>E000` |
+| `build/HEXDIAG08.BIN` | Byte-identical TI-safe short filename for the Beta 0.8 programmer image |
 
 Select W27C512 in the programmer, erase and blank-check it, program the entire
 65536-byte file, and run verify. Do not treat either raw 8K component image as

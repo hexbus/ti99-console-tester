@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # TI-99 Console Tester Diagnostic
 
-Public Beta 0.7 is a self-contained diagnostic BIOS for Geoff Trott's Console
+Public Beta 0.8 is a self-contained diagnostic BIOS for Geoff Trott's Console
 Tester hardware. It supports the TI-99/4, TI-99/4A, TI-99/4QI V2.2, and a
 TI-99/4A with missing or damaged GROMs. The LOAD switch can start the diagnostic
 without relying on the console's title screen or keyboard service.
@@ -9,7 +9,7 @@ without relying on the console's title screen or keyboard service.
 > **IMPORTANT: THE FULL DIAGNOSTIC REQUIRES A HARDWARE MODIFICATION.** Geoff
 > Trott's original Console Tester is wired for a single 8 KiB EPROM at `>E000`.
 > It must be modified to accept the additional 8 KiB diagnostic window at
-> `>6000` before you install and use `HEXDIAG07.BIN`. Do not place the full
+> `>6000` before you install and use `HEXDIAG08.BIN`. Do not place the full
 > 16 KiB diagnostic image into an unmodified board. Follow the illustrated
 > [16 KiB hardware modification guide](docs/HARDWARE-MODIFICATION-GUIDE.md)
 > before programming or installing the replacement device.
@@ -25,11 +25,11 @@ skips the unsupported Graphics-II bitmap stage.
 > work. Verify every modification with the board unpowered before installing an
 > EPROM.
 
-## Download and program Beta 0.7
+## Download and program Beta 0.8
 
-The current release is in [`release/beta-0.7`](release/beta-0.7/README.md).
+The current release is in [`release/beta-0.8`](release/beta-0.8/README.md).
 
-- Program `HEXDIAG07.BIN` into a W27C512 for the tested 16 KiB modification.
+- Program `HEXDIAG08.BIN` into a W27C512 for the tested 16 KiB modification.
 - Use the repeated-core compatibility image first when bringing up an
   unmodified 8 KiB board or checking the original `>E000` decode.
 - Verify the programmed device against `SHA256.TXT` before installation.
@@ -73,26 +73,30 @@ compose the W27C512 layout.
   16 KiB wiring and 32K, 40K, and later redesign options
 - [Source and build guide](docs/SOURCE-BUILD-GUIDE.md) - source map, ABI, build,
   verification, and release procedure
+- [Assembly memory map](docs/MEMORY-MAP.md) - every checked AORG/XORG region,
+  occupied range, and remaining headroom
+- [Changelog](CHANGELOG.md) - functional, verification, and documentation
+  changes in each public beta
 - [Technical reference](docs/TECHNICAL-REFERENCE.md) - address map, tests,
-  firmware profiles, and Beta 0.7 qualification
+  firmware profiles, and Beta 0.8 qualification
 - [Lessons learned](docs/LESSONS-LEARNED.md) - causes and guards for the major
   keyboard, VDP, sprite, timing, and packaging faults
 - [Provenance and licensing](docs/PROVENANCE.md) - original work, permitted
   third-party material, and attribution
-- [Backlog](docs/BACKLOG.md) - investigations intentionally deferred until
-  after the frozen Beta 0.7 image
+- [Backlog](docs/BACKLOG.md) - investigations intentionally deferred beyond
+  the frozen Beta 0.8 image
 
 PDF copies are provided under `output/pdf/` for readers who prefer a printable
 manual.
 
 ## Compatibility status
 
-Beta 0.7 has been exercised on a stock TI-99/4A, a TI-99/4QI V2.2, a GROMless
+Beta 0.8 has been exercised on a stock TI-99/4A, a TI-99/4QI V2.2, a GROMless
 TI-99/4A using LOAD recovery, and a TI-99/4 fitted with a Pico9918. The `/4`
 joystick selectors are columns 5 and 6; the `/4A` family uses columns 6 and 7.
-The tested Pico9918 system showed one fewer visible sprite group than expected,
-so that observation remains in the backlog rather than being presented as a
-native TMS9918 failure.
+The sprite page shows three visible groups at the original four-sprites-per-line
+limit. An F18A or Pico9918 configured for a higher limit may also show the
+yellow fifth entry; that is a configuration difference, not a failure.
 
 ## Licensing and credit
 

@@ -1,5 +1,9 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
-# Beta 0.7 source and build guide
+# Source and build guide
+
+Public Beta 0.8 is the released, hardware-validated image. The canonical build
+produces `HEXDIAG08.BIN`; release artifacts must remain byte-identical to that
+verified programmer image.
 
 This guide is for anyone who wants to read, assemble, verify, or modify the
 TI-99/4 and TI-99/4A Console Tester diagnostic. The checked-in assembly is the
@@ -20,7 +24,7 @@ a TI disk; `.a99` remains the host-side assembly suffix.
 - `src/MEGAU7.a99` assembles the attributed MegaDemo raster controller that is
   copied to tester U7 SRAM and runs at `>D000->D537`.
 
-The approved Beta 0.7 music stream is represented by the documented `MDPSG`
+The approved music stream is represented by the documented `MDPSG`
 table in the fixed core. No extracted ROM dump or opaque runtime player is
 required to assemble the public release.
 
@@ -55,17 +59,27 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 master list: it names and assembles the three active source files in dependency
 order. The traditional assembler listings are generated under `build/` as
 `.lst` files; they are output for review and debugging, not build inputs.
+The reviewed boundaries and current free space are recorded in the
+[assembly memory map](MEMORY-MAP.md).
+
+xas99 may report map-boundary labels such as `CSTART`, `F18END`, or `XEND` as
+unused constants. That is expected: `build.ps1` consumes those labels from the
+assembler listings to verify region sizes and collisions. The original
+MegaDemo `CLRTB` labels may be reported for the same harmless reason.
 
 The build script performs more than assembly. It also:
 
 1. assembles the relocated MegaDemo payload and checks its size and entry
    vectors;
 2. assembles the fixed core and extension as separate 8 KiB banks;
-3. verifies headers, signatures, entry ranges, ABI version, and fixed vectors;
-4. patches each bank's reserved checksum word to make its 16-bit word sum zero;
-5. builds the sparse 64 KiB W27C512 programmer image;
-6. writes a machine-readable manifest and short aliases such as
-   `build/HEXDIAG07.BIN`.
+3. verifies the complete AORG/XORG inventory and every region boundary from
+   the assembler listings;
+4. verifies headers, signatures, entry ranges, ABI version, and fixed vectors;
+5. patches each bank's reserved checksum word to make its 16-bit word sum zero;
+6. builds the sparse 64 KiB W27C512 programmer image;
+7. writes a machine-readable manifest, including the checked region map, and
+   short aliases such as
+   `build/HEXDIAG08.BIN`.
 
 For that reason, a raw assembler invocation is useful for development but is
 not a complete release build.
@@ -130,6 +144,6 @@ Before publishing another beta:
 5. test the LOAD path as well as the TI-99/4A cartridge-menu path; and
 6. preserve the released source and binaries together under `release/`.
 
-The Beta 0.7 behavior is hardware-validated. Comment-only cleanup should
+The Beta 0.8 behavior is hardware-validated. Comment-only cleanup should
 assemble to byte-identical banks. Any machine-code difference is a functional
 change and deserves a new test and an explicit release note.

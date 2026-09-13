@@ -1,0 +1,42 @@
+{
+  "schema": "ti99-console-tester-release-v1",
+  "version": "0.8",
+  "status": "PUBLIC_BETA",
+  "canonical_repository": "https://github.com/hexbus/ti99-console-tester",
+  "credit": "Jon Guidry (hexbus)",
+  "program_this_file": "HEXDIAG08.BIN",
+  "files": {
+    "HEXDIAG08.BIN": {
+      "purpose": "complete 16 KiB W27C512 programmer image",
+      "size_bytes": 65536,
+      "sha256": "fc0a3b15a05d72a7dc1ebcdf7938aed8e3e166858370dcb9985a6f4ee24a86a6",
+      "layout": "extension at >6000->7FFF; core at >E000->FFFF; all other bytes >FF"
+    },
+    "HEX8K08.BIN": {
+      "purpose": "first-test W27C512 image with eight identical core banks",
+      "size_bytes": 65536,
+      "sha256": "6f4d46c3637573c481be26f28d919c8041955f599030e4fc2fb2b485fa48d839"
+    },
+    "HEXCORE8.BIN": {
+      "purpose": "raw fixed 8 KiB core at >E000",
+      "size_bytes": 8192,
+      "sha256": "88a038df418e3652638e1fe3cd3837acc222e98ab9e16521d2b3dbcbc38ea69d"
+    },
+    "HEXEXT08.BIN": {
+      "purpose": "raw 8 KiB extension at >6000",
+      "size_bytes": 8192,
+      "sha256": "e0766fed355b85b05c75d8ad84d80c2f81a4d746a36f6aebe7ab3293935fb1cc"
+    }
+  },
+  "runtime": {
+    "tester_sram": ">C000->DFFF",
+    "megademo_runtime": ">D000->D537",
+    "load_vector": ">C000,>FF00",
+    "core_extension_abi": "1.1"
+  },
+  "sprite_display": {
+    "four_per_scanline": "three visible groups; yellow fifth entry suppressed",
+    "expanded_limit": "four visible groups including yellow",
+    "note": "sprite count reflects the configured scanline limit and is not a Pico9918 failure"
+  }
+}

@@ -1,9 +1,10 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
-# Beta 0.7 lessons learned
+# Console Tester lessons learned
 
-This postmortem records the failures that materially shaped the public beta.
-It is written for maintainers who need to understand why apparently simpler
-changes can break real recovery hardware.
+This postmortem records the failures that materially shaped Public Betas 0.7
+and 0.8. It is written for maintainers who
+need to understand why apparently simpler changes can break real recovery
+hardware.
 
 ## A diagnostic cannot depend on the part it diagnoses
 
@@ -75,10 +76,40 @@ addresses. The final controller is relocated as a unit to tester U7 SRAM at
 
 The fifth-sprite status flag reports a scanline limit; it does not say that a
 fifth object was displayed. Overlapping entries can also make several sprites
-look like one. The UI now reports collision and fifth-sprite flags as `SET` or
-`NOT SET` and asks the operator to inspect shapes, sizes, and colors. The open
-Pico9918 observation is documented without being mislabeled as a native
-TMS9918 failure.
+look like one. In the first test layout, a white high-priority sprite sat
+exactly over a red sprite on a white background, hiding the collision pair.
+Beta 0.8 instead puts the red sprite first and exactly overlaps the white one,
+so the pair appears as one clean red object while preserving collision. The
+yellow fifth entry should remain hidden at the stock limit, but
+may appear on replacement hardware configured for a higher scanline limit.
+
+The UI reports collision and fifth-sprite flags as `SET` or `NOT SET` and asks
+the operator to inspect shapes, sizes, and colors. It does not turn a
+replacement VDP's configured sprite limit into a false hardware failure.
+
+## Reset every sprite table a demo owns
+
+Restoring the ordinary UI sprite table at `>0300` was not sufficient after the
+MegaDemo. Its raster controller uses a separate timing-sprite table at `>3800`.
+On a real TMS9918A, those timing sprites could remain visible over the results,
+VRAM map, credits, and later menus even though the text palette and border had
+been restored. The text initializer now blanks the display, erases both full
+128-byte tables, restores all legacy VDP registers, and terminates both tables
+again before enabling the display.
+
+## A helper's register side effects are part of its interface
+
+The first enhanced-VDP detector appeared correct in source but never unlocked
+an F18A. Its VDP-register helper byte-swapped `R0` while formatting the control
+word. Calling the helper twice after loading register 57 only once therefore
+sent two different transactions instead of the required identical `>1C`
+writes.
+
+Beta 0.8 emits both complete unlock transactions explicitly and protects their
+machine-code sequence in the static tests. When hardware protocols require
+repeated writes, reload the value or use a routine whose input-preservation
+contract is explicit; visual similarity at the call site is not proof of
+identical bus traffic.
 
 ## Freeze bytes, not filenames
 
@@ -87,6 +118,7 @@ image. The public build now has a TI-compatible release alias, a manifest,
 SHA-256 sums, and a source snapshot. Comment-only cleanup is accepted only when
 the resulting programmer image remains byte-identical to the validated build.
 
-The public repository deliberately excludes old betas, disassemblies, ROM
-dumps, emulator loaders, and private harnesses. Those materials are useful for
-development archaeology but make a poor build contract for new contributors.
+The public repository preserves released betas but excludes intermediate test
+images, disassemblies, ROM dumps, emulator loaders, and private harnesses.
+Those materials are useful for development archaeology but make a poor build
+contract for new contributors.

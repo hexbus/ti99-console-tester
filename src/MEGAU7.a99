@@ -57,6 +57,7 @@ PHASE  EQU  TICK+2
 * Main program
 *
        XORG FXMEM
+MSTART EQU  $
 
        DATA   TOPINI
        DATA   TOPFRM
@@ -513,3 +514,4 @@ CLRTB7 BYTE >86,>98,>E9,>CE,>2C,>32,>F3,>6F
 * WAVMUS in the diagnostic extension advances the original music bytes once
 * per VBlank, so these setup-time callbacks intentionally do nothing.
 MDMRT  RT
+MEND   EQU  $
